@@ -9,7 +9,7 @@ use crate::{
     map::{CROUCH_HALF, PLAYER_HALF},
     net::{NetMsg, Session, SnapshotMsg},
     player::LocalPlayer,
-    gun_model::{GunHolder, GunModelSystems, ModelSizes},
+    gun_model::{FittedModels, GunHolder, GunModelSystems},
     protocol::*,
     weapons::{WeaponId, weapon},
     world::SharedAssets,
@@ -328,12 +328,12 @@ fn interpolate(
 
 /// Weapons without a model are a single box the size of the gun.
 fn size_gun_boxes(
-    model_sizes: Res<ModelSizes>,
+    fitted_models: Res<FittedModels>,
     guns: Query<(&GunHolder, &Children), With<Gun>>,
     mut boxes: Query<(&mut Transform, &mut Visibility), With<GunBox>>,
 ) {
     for (holder, children) in &guns {
-        let modelled = model_sizes.get(holder.weapon).is_some();
+        let modelled = fitted_models.get(holder.weapon).is_some();
         for child in children.iter() {
             if let Ok((mut transform, mut visibility)) = boxes.get_mut(child) {
                 transform.scale = Vec3::from(weapon(holder.weapon).size);

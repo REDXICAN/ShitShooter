@@ -14,7 +14,7 @@ use bevy::{
 
 use crate::{
     AppState,
-    gun_model::{GunHolder, ModelSizes},
+    gun_model::{Fitted, FittedModels, GunHolder},
     map::{self, CROUCH_EYE, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
@@ -63,6 +63,8 @@ const KICK_RECOVERY: f32 = 9.0;
 /// Field of view of the menu camera, in radians.
 pub const BASE_FOV: f32 = 1.3;
 pub const VIEW_MODEL_REST: Vec3 = Vec3::new(0.2, -0.17, -0.42);
+/// How far in front of the eye a sight's dot is held when aiming.
+const SIGHT_EYE_RELIEF: f32 = 0.12;
 /// `LocalPlayer::slot` when the knife is out (0 and 1 are the gun slots).
 pub const KNIFE_SLOT: usize = 2;
 
@@ -605,7 +607,7 @@ fn apply_friction(vel: &mut Vec3, dt: f32) {
 fn follow_camera(
     time: Res<Time>,
     settings: Res<Settings>,
-    model_sizes: Res<ModelSizes>,
+    fitted_models: Res<FittedModels>,
     mut player: ResMut<LocalPlayer>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
     view_model: Single<
@@ -667,7 +669,7 @@ fn follow_camera(
     let stats = player.weapon();
     let [width, height, length] = stats.size;
     // Drawn as its model if it has one (once loaded), else as boxes.
-    let model = model_sizes.get(player.weapon_id());
+    let model = fitted_models.get(player.weapon_id());
     let reload = if player.reloading() {
         1.0 - player.reload / stats.reload
     } else {
@@ -693,10 +695,14 @@ fn follow_camera(
             0.0,
         )
     };
-    // Aimed: centred, with the box gun's sight just under the crosshair, or a
-    // model's sights (its highest point) lined up with it.
-    let below_crosshair = model.map_or(height / 2.0 + 0.048, |size| size.y / 2.0 + 0.003);
-    let aimed = Vec3::new(0.0, -below_crosshair, -0.31 - length / 2.0);
+    // Aimed: centred. A sight's dot goes on the crosshair, close to the eye like
+    // a real one; otherwise a model's iron sights (its highest point) line up
+    // under it, or the box gun's sight sits just below it.
+    let aimed = match model {
+        Some(Fitted { aim_point: Some(dot), .. }) => Vec3::new(-dot.x, -dot.y, -SIGHT_EYE_RELIEF - dot.z),
+        Some(Fitted { size, .. }) => Vec3::new(0.0, -(size.y / 2.0 + 0.003), -0.31 - length / 2.0),
+        None => Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0),
+    };
 
     let (mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
     holder.weapon = player.weapon_id();

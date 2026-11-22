@@ -46,6 +46,10 @@ pub struct Model {
     pub path: &'static str,
     /// The barrel points along +Z in the file (forward in the game is -Z).
     pub barrel_plus_z: bool,
+    /// A sight model (under `assets/`) to mount on the gun's `SightMount` node.
+    /// Aiming lines up the sight's `AimPoint` node with the crosshair, and the
+    /// gun's nodes named `IronSight...` are hidden. See `gun_model.rs`.
+    pub sight: Option<&'static str>,
 }
 
 /// How far a knife reaches, in metres.
@@ -81,7 +85,11 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.014,
         kick_side: 0.006,
         headshot: 2.0,
-        model: Some(Model { path: "models/M4A1.gltf", barrel_plus_z: true }),
+        model: Some(Model {
+            path: "models/M4A1.gltf",
+            barrel_plus_z: true,
+            sight: Some("models/sights/red_dot.glb"),
+        }),
     },
     Weapon {
         name: "SMG",
@@ -102,7 +110,11 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.012,
         kick_side: 0.007,
         headshot: 1.6,
-        model: Some(Model { path: "models/MP7.gltf", barrel_plus_z: true }),
+        model: Some(Model {
+            path: "models/MP7.gltf",
+            barrel_plus_z: true,
+            sight: None,
+        }),
     },
     Weapon {
         name: "Shotgun",
@@ -144,7 +156,11 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.1,
         kick_side: 0.012,
         headshot: 2.5,
-        model: Some(Model { path: "models/SCAR.gltf", barrel_plus_z: true }),
+        model: Some(Model {
+            path: "models/SCAR.gltf",
+            barrel_plus_z: true,
+            sight: None,
+        }),
     },
     Weapon {
         name: "Pistol",
@@ -165,7 +181,11 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.03,
         kick_side: 0.007,
         headshot: 2.0,
-        model: Some(Model { path: "models/M1911Tactical.gltf", barrel_plus_z: false }),
+        model: Some(Model {
+            path: "models/M1911Tactical.gltf",
+            barrel_plus_z: false,
+            sight: None,
+        }),
     },
     Weapon {
         name: "Knife",

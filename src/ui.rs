@@ -17,6 +17,7 @@ use crate::{
     AppState, LaunchArgs,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
     grenade::SmokeFog,
+    gun_model::FittedModels,
     map::MAP_NAMES,
     net::{self, Connection, MenuStatus, Session},
     player::{Controls, DASH_COOLDOWN, LocalPlayer, WHEEL_DIRS, wheel_choice},
@@ -93,7 +94,7 @@ impl Plugin for UiPlugin {
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
                     update_rosters,
-                    (update_hud, update_hud_shapes, update_overlays, update_key_hints, update_wheel)
+                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_key_hints, update_wheel)
                         .run_if(in_state(AppState::Playing)),
                 ),
             );
@@ -1393,6 +1394,7 @@ fn spawn_hud(mut commands: Commands) {
 
     // Crosshair: a white dot with a dark rim, so it shows against anything.
     commands.spawn((
+        Crosshair,
         hud_layer(),
         children![(
             Node {
@@ -2018,6 +2020,23 @@ fn update_hud_shapes(
             background.0 = color;
         }
     }
+}
+
+/// The crosshair's dot, hidden while aiming through a sight that has its own.
+#[derive(Component)]
+struct Crosshair;
+
+fn update_crosshair(
+    player: Res<LocalPlayer>,
+    fitted: Res<FittedModels>,
+    mut crosshair: Single<&mut Visibility, With<Crosshair>>,
+) {
+    let sight = fitted.get(player.weapon_id()).is_some_and(|f| f.aim_point.is_some());
+    crosshair.set_if_neq(if sight && player.aim > 0.9 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    });
 }
 
 fn update_overlays(
