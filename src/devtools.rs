@@ -170,6 +170,7 @@ fn selftest_play(
     cue_count: Res<CueCount>,
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut marker_captured: Local<bool>,
+    mut wheel_captured: Local<bool>,
 ) {
     if player.hit_marker > 0.0 && !*marker_captured {
         *marker_captured = true;
@@ -192,8 +193,11 @@ fn selftest_play(
     } else {
         keys.release(KeyCode::ShiftLeft);
     }
-    // The trigger is held, except with the pistol, which wants a click per shot.
-    if (4.4..5.0).contains(&t) && (t * 4.0).fract() > 0.5 {
+    // The trigger is held, except with the pistol, which wants a click per
+    // shot, and around the clicks that cook and throw grenades.
+    let pistol_click = (4.4..5.0).contains(&t) && (t * 4.0).fract() > 0.5;
+    let grenade_click = [1.0..1.2, 1.45..1.5, 1.6..2.0, 2.05..2.1].iter().any(|window| window.contains(&t));
+    if pistol_click || grenade_click {
         mouse.release(MouseButton::Left);
     } else {
         mouse.press(MouseButton::Left);
@@ -210,8 +214,21 @@ fn selftest_play(
             keys.release(key);
         }
     };
-    // A grenade early on, a crouch that turns into a slide, and a reload by hand.
-    hold(KeyCode::KeyG, (1.0..1.1).contains(&t));
+    // A frag early on (taken from the wheel, a click to pull the pin, and
+    // lobbed with a right-click), then a smoke picked on the wheel and thrown
+    // with a click, a crouch that turns into a slide, and a reload by hand.
+    hold(KeyCode::KeyG, (1.0..1.1).contains(&t) || (1.6..1.75).contains(&t));
+    if (1.6..1.75).contains(&t)
+        && let Some(cursor) = &mut player.wheel
+    {
+        let smoke = crate::player::WHEEL_DIRS[crate::protocol::SMOKE as usize];
+        // From the second frame on, the wheel shows the cursor on the smoke.
+        if *cursor == smoke && !*wheel_captured {
+            *wheel_captured = true;
+            test.capture(&mut commands, "wheel.png");
+        }
+        *cursor = smoke;
+    }
     hold(KeyCode::ControlLeft, (2.35..3.3).contains(&t));
     hold(KeyCode::KeyR, (6.6..6.7).contains(&t));
     // Every weapon of the default loadout in turn: pistol, knife, back to the rifle.
@@ -224,7 +241,7 @@ fn selftest_play(
         mouse.release(MouseButton::Right);
     }
     if test.reached(0, 1.9) {
-        println!("[selftest] aim {:.2} ammo {} grenades {:.2}", player.aim, player.guns[0].ammo, player.grenades);
+        println!("[selftest] aim {:.2} ammo {} grenades {:.2?}", player.aim, player.guns[0].ammo, player.grenades);
         test.capture(&mut commands, "aim.png");
     }
     if test.reached(1, 2.7) {
@@ -294,7 +311,7 @@ fn selftest_play(
             connection.ping_ms()
         );
         println!(
-            "[selftest] ammo {} reloading {} grenades {:.2}",
+            "[selftest] ammo {} reloading {} grenades {:.2?}",
             player.guns[0].ammo,
             player.reloading(),
             player.grenades
@@ -330,9 +347,10 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
             Sound::Footstep => &mut count.footsteps,
             Sound::Land => &mut count.landings,
             Sound::Reload => &mut count.reloads,
-            Sound::Throw => &mut count.throws,
+            Sound::Pin | Sound::Throw => &mut count.throws,
             Sound::Bounce => &mut count.bounces,
-            Sound::Explosion => &mut count.explosions,
+            Sound::Explosion | Sound::Flashbang | Sound::SmokePop => &mut count.explosions,
+            Sound::Ringing => &mut count.explosions,
             Sound::ArmorBreak | Sound::ArmorBroken | Sound::ArmorPickup => &mut count.armor,
         };
         if cue.at.is_none() {

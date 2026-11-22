@@ -11,7 +11,7 @@ use crate::{
     audio::{Sound, SoundCue},
     map,
     net::{Connection, NetMsg, Session},
-    player::{KNIFE_SLOT, LocalPlayer, PlayerSystems},
+    player::{InHand, KNIFE_SLOT, LocalPlayer, PlayerSystems},
     protocol::*,
     remote::{RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
@@ -119,6 +119,7 @@ fn fire(
     remotes: Query<(&RemotePlayer, &Transform)>,
     mut rng: Local<u32>,
     mut trigger_buffer: Local<f32>,
+    mut fire_held: Local<bool>,
 ) {
     let dt = time.delta_secs();
     let player = &mut *player;
@@ -130,15 +131,30 @@ fn fire(
     }
     player.knife_cooldown = (player.knife_cooldown - dt).max(0.0);
     player.draw = (player.draw - dt).max(0.0);
-    player.grenades = (player.grenades + dt / GRENADE_RECHARGE).min(GRENADE_MAX);
+    for (count, stats) in player.grenades.iter_mut().zip(&GRENADES) {
+        *count = (*count + dt / stats.recharge).min(stats.max);
+    }
+    if let Some(InHand { fuse: Some(fuse), .. }) = &mut player.hand {
+        *fuse -= dt;
+        if *fuse <= 0.0 {
+            // Held too long: it goes off in our hand (the server sees to that).
+            player.hand = None;
+        }
+    }
     if !player.alive {
         *trigger_buffer = 0.0;
+        player.hand = None;
         return;
     }
 
-    // Switching weapons takes a moment and abandons a reload.
+    // Switching weapons takes a moment and abandons a reload. It also puts
+    // away a grenade in hand, unless that is a frag with its pin pulled.
+    let cooking = player.hand.is_some_and(|hand| hand.fuse.is_some());
     for (action, slot) in [(Action::Primary, 0), (Action::Secondary, 1), (Action::Knife, KNIFE_SLOT)] {
-        if input.just_pressed(action) && player.slot != slot {
+        if !input.just_pressed(action) || cooking {
+            continue;
+        }
+        if player.hand.take().is_some() || player.slot != slot {
             player.slot = slot;
             player.draw = DRAW_TIME;
             player.reload = 0.0;
@@ -159,6 +175,7 @@ fn fire(
                 own_sound(Sound::Reload);
             }
         } else if player.draw <= 0.0
+            && player.hand.is_none()
             && gun.ammo < stats.magazine
             && (gun.ammo == 0 || input.just_pressed(Action::Reload))
         {
@@ -170,21 +187,64 @@ fn fire(
     let origin = player.eye();
     let aim_dir = map::look_dir(player.yaw, player.pitch);
 
-    if input.just_pressed(Action::Grenade) && player.grenades >= 1.0 {
-        player.grenades -= 1.0;
-        player.throw_anim = 1.0;
-        // Let go of it a little in front of the face, unless a wall is right there.
-        let reach = match map.0.raycast(origin, aim_dir, 0.9) {
-            Some(wall) => (wall - 0.3).max(0.0),
-            None => 0.6,
-        };
-        // Lobbed slightly upwards, and it keeps some of our own momentum.
-        let vel = (aim_dir + Vec3::Y * 0.15).normalize() * GRENADE_THROW_SPEED + player.vel * 0.6;
-        connection.send(&ClientMsg::Grenade {
-            origin: (origin + aim_dir * reach).to_array(),
-            vel: vel.to_array(),
-        });
-        own_sound(Sound::Throw);
+    // With a grenade in hand, a click throws it: a frag takes one click to
+    // pull the pin (its fuse burns from then on) and another to throw. A
+    // right-click lobs it gently, pin and all.
+    if let Some(mut hand) = player.hand
+        && player.wheel.is_none()
+    {
+        let lob = input.just_pressed(Action::Aim);
+        if input.just_pressed(Action::Fire) || lob {
+            *fire_held = true;
+            let mut throw = true;
+            if hand.kind == FRAG && hand.fuse.is_none() {
+                let count = &mut player.grenades[FRAG as usize];
+                if *count >= 1.0 {
+                    *count -= 1.0;
+                    hand.fuse = Some(grenade(FRAG).fuse);
+                    connection.send(&ClientMsg::Cook);
+                    own_sound(Sound::Pin);
+                }
+                throw = lob && hand.fuse.is_some();
+            } else if hand.kind != FRAG {
+                let count = &mut player.grenades[hand.kind as usize];
+                throw = *count >= 1.0;
+                if throw {
+                    *count -= 1.0;
+                }
+            }
+            player.hand = Some(hand);
+            if throw {
+                player.hand = None;
+                player.throw_anim = 1.0;
+                // Let go of it a little in front of the face, unless a wall is right there.
+                let reach = match map.0.raycast(origin, aim_dir, 0.9) {
+                    Some(wall) => (wall - 0.3).max(0.0),
+                    None => 0.6,
+                };
+                // Thrown slightly upwards, and it keeps some of our own momentum.
+                let (speed, lift) = if lob {
+                    (GRENADE_THROW_SPEED * GRENADE_LOB, 0.3)
+                } else {
+                    (GRENADE_THROW_SPEED, 0.15)
+                };
+                let vel = (aim_dir + Vec3::Y * lift).normalize() * speed + player.vel * 0.6;
+                connection.send(&ClientMsg::Grenade {
+                    kind: hand.kind,
+                    origin: (origin + aim_dir * reach).to_array(),
+                    vel: vel.to_array(),
+                });
+                own_sound(Sound::Throw);
+            }
+        }
+    }
+    // No shooting with a grenade in hand, nor until the click that threw it is let go.
+    if !input.pressed(Action::Fire) {
+        *fire_held = false;
+    }
+    if player.hand.is_some() || player.wheel.is_some() || *fire_held {
+        *trigger_buffer = 0.0;
+        return;
     }
 
     // Automatic weapons fire while the trigger is held; the others once per click.

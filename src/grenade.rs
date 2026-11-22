@@ -2,14 +2,21 @@
 //! damage); it tells us when one is thrown and when it goes off. In between we
 //! run the same bounce simulation, so the grenade on screen is where the
 //! server's is.
+//!
+//! A frag explodes. A flashbang blinds whoever sees it go off: we work out our
+//! own blindness here, the server does it for the bots. A smoke grenade leaves
+//! a cloud that hides everything behind it for a while.
+
+use std::f32::consts::TAU;
 
 use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
     AppState,
     audio::{Sound, SoundCue},
-    map::GRENADE_HALF,
+    map::{self, BOUNCE_SOUND, GRENADE_HALF},
     net::NetMsg,
+    player::LocalPlayer,
     protocol::*,
     world::{GameMap, SharedAssets},
 };
@@ -19,19 +26,45 @@ const BLAST_TIME: f32 = 0.45;
 /// Widest the fireball gets, in metres across.
 const BLAST_SIZE: f32 = 5.5;
 const BLAST_LIGHT: f32 = 6_000_000.0;
+/// A flashbang's flash is shorter, smaller and much brighter.
+const FLASH_TIME: f32 = 0.3;
+const FLASH_SIZE: f32 = 1.6;
+const FLASH_LIGHT: f32 = 25_000_000.0;
+/// Seconds a smoke cloud takes to billow out, and to thin away at the end.
+const SMOKE_GROW: f32 = 1.2;
+const SMOKE_FADE: f32 = 2.5;
+/// How opaque each puff of smoke is. Two layers are as good as solid.
+const SMOKE_ALPHA: f32 = 0.93;
+/// Flashed for less than this, the ears do not ring.
+const RINGING_BLIND: f32 = 1.0;
 
 pub struct GrenadePlugin;
 
 impl Plugin for GrenadePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (handle_net, simulate, update_blasts)
-                .chain()
-                .run_if(in_state(AppState::Playing)),
-        );
+        app.init_resource::<SmokeFog>()
+            .add_systems(OnExit(AppState::Playing), |mut fog: ResMut<SmokeFog>| fog.0 = 0.0)
+            .add_systems(
+                Update,
+                (
+                    (handle_net, simulate, update_blasts, update_smoke)
+                        .chain()
+                        .run_if(in_state(AppState::Playing)),
+                    show_held,
+                ),
+            );
     }
 }
+
+/// How deep in smoke our eyes are: 0 = clear air, 1 = can't see a thing.
+/// Clouds are drawn from the outside only, so from the inside this fogs the
+/// whole screen instead.
+#[derive(Resource, Default)]
+pub struct SmokeFog(pub f32);
+
+/// The grenade in our hand. A child of the camera.
+#[derive(Component)]
+pub struct HeldGrenade;
 
 #[derive(Component)]
 struct Grenade {
@@ -43,23 +76,42 @@ struct Grenade {
     /// Time not yet consumed by whole simulation steps.
     clock: f32,
     age: f32,
+    fuse: f32,
 }
 
+/// A fireball or flash: a glowing sphere that swells and shrinks away, or the
+/// light that goes with it.
 #[derive(Component)]
 struct Blast {
     age: f32,
+    life: f32,
+    /// Widest the sphere gets, in metres across.
+    size: f32,
+    /// Brightest the light gets.
+    light: f32,
+}
+
+/// A smoke cloud: a handful of overlapping puffs sharing one material, which
+/// thins out at the end.
+#[derive(Component)]
+struct SmokeCloud {
+    age: f32,
+    material: Handle<StandardMaterial>,
 }
 
 fn handle_net(
     mut commands: Commands,
     mut messages: MessageReader<NetMsg>,
     assets: Res<SharedAssets>,
+    map: Res<GameMap>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut player: ResMut<LocalPlayer>,
     grenades: Query<(Entity, &Grenade)>,
     mut sounds: MessageWriter<SoundCue>,
 ) {
     for NetMsg(msg) in messages.read() {
         match msg {
-            ServerMsg::Grenade { id, pos, vel } => {
+            ServerMsg::Grenade { id, kind, pos, vel, fuse } => {
                 let pos = Vec3::from(*pos);
                 commands.spawn((
                     Grenade {
@@ -69,48 +121,159 @@ fn handle_net(
                         vel: Vec3::from(*vel),
                         clock: 0.0,
                         age: 0.0,
+                        fuse: *fuse,
                     },
                     Mesh3d(assets.sphere.clone()),
-                    MeshMaterial3d(assets.grenade.clone()),
+                    MeshMaterial3d(assets.grenades[*kind as usize % GRENADE_KINDS].clone()),
                     Transform::from_translation(pos).with_scale(Vec3::splat(GRENADE_HALF * 2.0)),
                     DespawnOnExit(AppState::Playing),
                 ));
             }
-            ServerMsg::Explosion { id, pos } => {
+            ServerMsg::Explosion { id, kind, pos } => {
                 for (entity, grenade) in &grenades {
                     if grenade.id == *id {
                         commands.entity(entity).despawn();
                     }
                 }
                 let pos = Vec3::from(*pos);
-                sounds.write(SoundCue {
-                    sound: Sound::Explosion,
-                    at: Some(pos),
-                });
-                commands.spawn((
-                    Blast { age: 0.0 },
-                    Mesh3d(assets.sphere.clone()),
-                    MeshMaterial3d(assets.explosion.clone()),
-                    Transform::from_translation(pos).with_scale(Vec3::splat(0.3)),
-                    NotShadowCaster,
-                    DespawnOnExit(AppState::Playing),
-                ));
-                // The flash. Not a child of the fireball, whose scale would shrink it.
-                commands.spawn((
-                    Blast { age: 0.0 },
-                    PointLight {
-                        color: Color::srgb(1.0, 0.6, 0.25),
-                        intensity: BLAST_LIGHT,
-                        range: 40.0,
-                        ..default()
-                    },
-                    Transform::from_translation(pos + Vec3::Y * 0.8),
-                    DespawnOnExit(AppState::Playing),
-                ));
+                match *kind {
+                    FLASH => {
+                        sounds.write(SoundCue {
+                            sound: Sound::Flashbang,
+                            at: Some(pos),
+                        });
+                        spawn_blast(&mut commands, &assets, &assets.flash, pos, FLASH_TIME, FLASH_SIZE, FLASH_LIGHT, Color::WHITE);
+                        if player.alive {
+                            let look = map::look_dir(player.yaw, player.pitch);
+                            let blind = map.0.flash_blindness(pos, player.eye(), look);
+                            if blind >= RINGING_BLIND && player.blind < RINGING_BLIND {
+                                sounds.write(SoundCue {
+                                    sound: Sound::Ringing,
+                                    at: None,
+                                });
+                            }
+                            player.blind = player.blind.max(blind);
+                        }
+                    }
+                    SMOKE => {
+                        sounds.write(SoundCue {
+                            sound: Sound::SmokePop,
+                            at: Some(pos),
+                        });
+                        spawn_smoke(&mut commands, &assets, &mut materials, &map, pos);
+                    }
+                    _ => {
+                        sounds.write(SoundCue {
+                            sound: Sound::Explosion,
+                            at: Some(pos),
+                        });
+                        let color = Color::srgb(1.0, 0.6, 0.25);
+                        spawn_blast(&mut commands, &assets, &assets.explosion, pos, BLAST_TIME, BLAST_SIZE, BLAST_LIGHT, color);
+                    }
+                }
             }
             _ => {}
         }
     }
+}
+
+fn spawn_blast(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    material: &Handle<StandardMaterial>,
+    pos: Vec3,
+    life: f32,
+    size: f32,
+    light: f32,
+    color: Color,
+) {
+    let blast = || Blast {
+        age: 0.0,
+        life,
+        size,
+        light,
+    };
+    commands.spawn((
+        blast(),
+        Mesh3d(assets.sphere.clone()),
+        MeshMaterial3d(material.clone()),
+        Transform::from_translation(pos).with_scale(Vec3::splat(0.01)),
+        NotShadowCaster,
+        DespawnOnExit(AppState::Playing),
+    ));
+    // The light. Not a child of the sphere, whose scale would shrink it.
+    commands.spawn((
+        blast(),
+        PointLight {
+            color,
+            intensity: light,
+            range: 40.0,
+            ..default()
+        },
+        Transform::from_translation(pos + Vec3::Y * 0.8),
+        DespawnOnExit(AppState::Playing),
+    ));
+}
+
+/// The puffs a cloud is made of: offset from its middle and radius, both as
+/// parts of `SMOKE_RADIUS`. A big one in the middle, a ring around it at
+/// head height, and a few on top.
+fn puffs() -> impl Iterator<Item = (Vec3, f32)> {
+    let ring = (0..6).map(|i| {
+        let angle = i as f32 * TAU / 6.0;
+        (Vec3::new(angle.cos() * 0.5, -0.05, angle.sin() * 0.5), 0.55)
+    });
+    let top = (0..3).map(|i| {
+        let angle = (i as f32 + 0.5) * TAU / 3.0;
+        (Vec3::new(angle.cos() * 0.35, 0.4, angle.sin() * 0.35), 0.45)
+    });
+    std::iter::once((Vec3::ZERO, 0.75)).chain(ring).chain(top)
+}
+
+fn spawn_smoke(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    materials: &mut Assets<StandardMaterial>,
+    map: &GameMap,
+    pos: Vec3,
+) {
+    let center = map::smoke_center(pos);
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.6, 0.62, 0.62, SMOKE_ALPHA),
+        emissive: LinearRgba::rgb(0.06, 0.06, 0.06),
+        perceptual_roughness: 1.0,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    commands
+        .spawn((
+            SmokeCloud {
+                age: 0.0,
+                material: material.clone(),
+            },
+            Transform::from_translation(center).with_scale(Vec3::splat(0.2)),
+            Visibility::default(),
+            DespawnOnExit(AppState::Playing),
+        ))
+        .with_children(|cloud| {
+            for (offset, radius) in puffs() {
+                let radius = radius * SMOKE_RADIUS;
+                let mut offset = offset * SMOKE_RADIUS;
+                // Pulled in from walls, so the smoke does not show through them.
+                let distance = offset.length();
+                if distance > 0.0
+                    && let Some(wall) = map.0.raycast(center, offset / distance, distance + radius * 0.5)
+                {
+                    offset *= (wall - radius * 0.5).max(0.0) / distance;
+                }
+                cloud.spawn((
+                    Mesh3d(assets.sphere.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(offset).with_scale(Vec3::splat(radius * 2.0)),
+                    NotShadowCaster,
+                ));
+            }
+        });
 }
 
 fn simulate(
@@ -127,7 +290,7 @@ fn simulate(
             grenade.clock -= GRENADE_STEP;
             grenade.age += GRENADE_STEP;
             grenade.previous = grenade.pos;
-            if map.0.step_grenade(&mut grenade.pos, &mut grenade.vel, GRENADE_STEP) {
+            if map.0.step_grenade(&mut grenade.pos, &mut grenade.vel, GRENADE_STEP) > BOUNCE_SOUND {
                 sounds.write(SoundCue {
                     sound: Sound::Bounce,
                     at: Some(grenade.pos),
@@ -137,13 +300,13 @@ fn simulate(
         transform.translation = grenade.previous.lerp(grenade.pos, grenade.clock / GRENADE_STEP);
         // The server's explosion normally removes it. This only tidies up one
         // whose explosion message never came.
-        if grenade.age > GRENADE_FUSE + 2.0 {
+        if grenade.age > grenade.fuse + 2.0 {
             commands.entity(entity).despawn();
         }
     }
 }
 
-/// The fireball swells fast and then shrinks away; the flash fades with it.
+/// The sphere swells fast and then shrinks away; the light fades with it.
 fn update_blasts(
     mut commands: Commands,
     time: Res<Time>,
@@ -151,22 +314,89 @@ fn update_blasts(
 ) {
     for (entity, mut blast, mut transform, light) in &mut blasts {
         blast.age += time.delta_secs();
-        let t = blast.age / BLAST_TIME;
+        let t = blast.age / blast.life;
         if t >= 1.0 {
             commands.entity(entity).despawn();
             continue;
         }
-        match light {
-            Some(mut light) => light.intensity = BLAST_LIGHT * (1.0 - t) * (1.0 - t),
-            None => {
-                let swell = (t / 0.3).min(1.0);
-                let size = if t < 0.3 {
-                    1.0 - (1.0 - swell).powi(3)
-                } else {
-                    1.0 - ((t - 0.3) / 0.7).powi(2)
-                };
-                transform.scale = Vec3::splat((BLAST_SIZE * size).max(0.01));
-            }
+        if let Some(mut light) = light {
+            light.intensity = blast.light * (1.0 - t) * (1.0 - t);
+        } else {
+            let swell = (t / 0.3).min(1.0);
+            let size = if t < 0.3 {
+                1.0 - (1.0 - swell).powi(3)
+            } else {
+                1.0 - ((t - 0.3) / 0.7).powi(2)
+            };
+            transform.scale = Vec3::splat((blast.size * size).max(0.01));
         }
     }
+}
+
+/// Clouds billow out, hang there, then thin away. Works out how deep in
+/// smoke our eyes are.
+fn update_smoke(
+    mut commands: Commands,
+    time: Res<Time>,
+    player: Res<LocalPlayer>,
+    mut fog: ResMut<SmokeFog>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut clouds: Query<(Entity, &mut SmokeCloud, &mut Transform)>,
+) {
+    let eye = player.eye();
+    fog.0 = 0.0;
+    for (entity, mut cloud, mut transform) in &mut clouds {
+        cloud.age += time.delta_secs();
+        if cloud.age >= SMOKE_TIME {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let grow = (cloud.age / SMOKE_GROW).min(1.0);
+        let scale = 0.2 + 0.8 * (1.0 - (1.0 - grow).powi(3));
+        transform.scale = Vec3::splat(scale);
+        let left = SMOKE_TIME - cloud.age;
+        let thickness = (left / SMOKE_FADE).min(1.0);
+        if thickness < 1.0
+            && let Some(mut material) = materials.get_mut(&cloud.material)
+        {
+            material.base_color.set_alpha(SMOKE_ALPHA * thickness);
+        }
+        // Thickening over the outer metre or so.
+        let radius = SMOKE_RADIUS * scale;
+        let depth = (radius - eye.distance(transform.translation)) / (radius * 0.25);
+        fog.0 = fog.0.max(depth.clamp(0.0, 1.0) * thickness);
+    }
+}
+
+/// The grenade comes up into view in the other hand.
+fn show_held(
+    state: Res<State<AppState>>,
+    player: Res<LocalPlayer>,
+    assets: Option<Res<SharedAssets>>,
+    held: Single<(&mut Transform, &mut Visibility, &mut MeshMaterial3d<StandardMaterial>), With<HeldGrenade>>,
+) {
+    let (mut transform, mut visibility, mut material) = held.into_inner();
+    let hand = player.hand.filter(|_| player.alive && *state.get() == AppState::Playing);
+    let wanted = if hand.is_some() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if *visibility != wanted {
+        *visibility = wanted;
+    }
+    let (Some(hand), Some(assets)) = (hand, assets) else {
+        return;
+    };
+    let kind_material = &assets.grenades[hand.kind as usize % GRENADE_KINDS];
+    if material.0 != *kind_material {
+        material.0 = kind_material.clone();
+    }
+    // A cooking frag trembles as the fuse runs down.
+    let shake = match hand.fuse {
+        Some(fuse) if fuse < 0.8 => (fuse * 90.0).sin() * 0.004,
+        _ => 0.0,
+    };
+    transform.translation = Vec3::new(-0.24, -0.42, -0.5).lerp(Vec3::new(-0.2, -0.2, -0.5), player.hold)
+        + Vec3::new(shake, 0.0, 0.0);
 }

@@ -3,9 +3,10 @@
 use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
+    grenade::HeldGrenade,
     map::Map,
     net::Session,
-    protocol::{HILL_RADIUS, MODE_HILL, PLAYER_COLOR_COUNT},
+    protocol::{GRENADE_KINDS, HILL_RADIUS, MODE_HILL, PLAYER_COLOR_COUNT},
 };
 
 pub struct WorldPlugin;
@@ -74,7 +75,10 @@ pub struct SharedAssets {
     pub tracer: Handle<StandardMaterial>,
     pub enemy_tracer: Handle<StandardMaterial>,
     pub explosion: Handle<StandardMaterial>,
-    pub grenade: Handle<StandardMaterial>,
+    /// The white-hot flash of a flashbang.
+    pub flash: Handle<StandardMaterial>,
+    /// Each kind of grenade, indexed by `GrenadeKind`.
+    pub grenades: [Handle<StandardMaterial>; GRENADE_KINDS],
     pad: Handle<StandardMaterial>,
     armor: Handle<StandardMaterial>,
     /// The faint mark under an armor pickup, there even while it is taken.
@@ -108,6 +112,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let sphere = meshes.add(Sphere::new(0.5).mesh().ico(4).expect("valid sphere"));
     let mut glowing = |color: LinearRgba| {
         materials.add(StandardMaterial {
             base_color: Color::BLACK,
@@ -122,11 +127,20 @@ fn setup(
     let pad = glowing(LinearRgba::rgb(0.4, 5.0, 3.0));
     let armor = glowing(LinearRgba::rgb(0.8, 2.6, 9.0));
     let armor_base = glowing(LinearRgba::rgb(0.05, 0.25, 0.9));
-    let grenade = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.16, 0.24, 0.12),
-        emissive: LinearRgba::rgb(0.5, 0.06, 0.03),
-        perceptual_roughness: 0.6,
-        ..default()
+    let flash = glowing(LinearRgba::rgb(40.0, 40.0, 36.0));
+    // Frag: olive with a red glint; flash: pale with a yellow one; smoke: grey with a white one.
+    let grenades = [
+        ([0.16, 0.24, 0.12], [0.5, 0.06, 0.03]),
+        ([0.75, 0.75, 0.7], [0.6, 0.5, 0.05]),
+        ([0.3, 0.32, 0.34], [0.25, 0.25, 0.25]),
+    ]
+    .map(|([r, g, b], [er, eg, eb])| {
+        materials.add(StandardMaterial {
+            base_color: Color::srgb(r, g, b),
+            emissive: LinearRgba::rgb(er, eg, eb),
+            perceptual_roughness: 0.6,
+            ..default()
+        })
     });
     let dark = materials.add(StandardMaterial {
         base_color: Color::srgb(0.05, 0.05, 0.06),
@@ -178,6 +192,14 @@ fn setup(
                 gun_part(ViewModelPart::Sight, &cube, &dark),
                 gun_part(ViewModelPart::Magazine, &cube, &dark),
             ],
+        ), (
+            // The grenade in the other hand while it is being cooked.
+            HeldGrenade,
+            Mesh3d(sphere.clone()),
+            MeshMaterial3d(grenades[0].clone()),
+            Transform::from_xyz(-0.24, -0.42, -0.5).with_scale(Vec3::splat(0.07)),
+            Visibility::Hidden,
+            NotShadowCaster,
         )],
     ));
 
@@ -203,12 +225,13 @@ fn setup(
         hill_mesh: meshes.add(Cylinder::new(HILL_RADIUS, HILL_HEIGHT)),
         hill_materials,
         body: meshes.add(Capsule3d::new(0.34, 0.62)),
-        sphere: meshes.add(Sphere::new(0.5).mesh().ico(4).expect("valid sphere")),
+        sphere: sphere.clone(),
         cube,
         tracer,
         enemy_tracer,
         explosion,
-        grenade,
+        flash,
+        grenades: grenades.clone(),
         pad,
         armor,
         armor_base,

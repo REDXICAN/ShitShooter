@@ -174,10 +174,23 @@ pub struct LocalPlayer {
     pub aim: f32,
     /// Seconds until the reload finishes; 0 when not reloading.
     pub reload: f32,
-    /// Grenades in hand (whole ones can be thrown; the fraction is the recharge).
-    pub grenades: f32,
+    /// Grenades of each kind in hand (whole ones can be thrown; the fraction
+    /// is the recharge).
+    pub grenades: [f32; GRENADE_KINDS],
+    /// The grenade in hand, ready to throw instead of the weapon.
+    pub hand: Option<InHand>,
+    /// While the grenade key is held, the wheel is open and the mouse moves
+    /// this cursor instead of the view: an offset from the middle of the
+    /// wheel, at most 1 long (screen directions, y down).
+    pub wheel: Option<Vec2>,
+    /// What the wheel picks if the mouse is not moved.
+    pub last_grenade: GrenadeKind,
     /// 1 right after throwing a grenade, decays to 0. Drives the gun dip.
     pub throw_anim: f32,
+    /// 0 -> 1 as a cooked grenade is raised and the gun lowered.
+    pub hold: f32,
+    /// Seconds of flashbang blindness left.
+    pub blind: f32,
 }
 
 impl Default for LocalPlayer {
@@ -212,10 +225,45 @@ impl Default for LocalPlayer {
             view_height: STAND_EYE,
             aim: 0.0,
             reload: 0.0,
-            grenades: GRENADE_MAX,
+            grenades: GRENADES.map(|stats| stats.max),
+            hand: None,
+            wheel: None,
+            last_grenade: FRAG,
             throw_anim: 0.0,
+            hold: 0.0,
+            blind: 0.0,
         }
     }
+}
+
+/// A grenade in hand.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct InHand {
+    pub kind: GrenadeKind,
+    /// A frag's fuse once its pin is pulled: seconds left before it goes off.
+    pub fuse: Option<f32>,
+}
+
+/// Where each kind of grenade sits on the wheel (screen directions, y down):
+/// frag at the top, flash bottom right, smoke bottom left.
+pub const WHEEL_DIRS: [Vec2; GRENADE_KINDS] = [
+    Vec2::new(0.0, -1.0),
+    Vec2::new(0.866, 0.5),
+    Vec2::new(-0.866, 0.5),
+];
+/// Mouse movement, in pixels, that takes the wheel cursor from the middle to the edge.
+const WHEEL_TRAVEL: f32 = 120.0;
+/// The wheel cursor must be this far out to pick anything but the last grenade.
+const WHEEL_DEAD_ZONE: f32 = 0.3;
+
+/// The grenade the wheel picks with its cursor at `cursor`.
+pub fn wheel_choice(cursor: Vec2, last: GrenadeKind) -> GrenadeKind {
+    if cursor.length() < WHEEL_DEAD_ZONE {
+        return last;
+    }
+    (0..GRENADE_KINDS)
+        .max_by(|a, b| WHEEL_DIRS[*a].dot(cursor).total_cmp(&WHEEL_DIRS[*b].dot(cursor)))
+        .unwrap_or(0) as GrenadeKind
 }
 
 impl LocalPlayer {
@@ -299,6 +347,7 @@ fn handle_net(
                     spawn_seq: *spawn_seq,
                     // Every life starts with the loadout picked in the menus.
                     guns: [GunSlot::full(settings.primary), GunSlot::full(settings.secondary)],
+                    last_grenade: player.last_grenade,
                     ..default()
                 };
             }
@@ -315,6 +364,9 @@ fn handle_net(
                 player.health = 0;
                 player.armor = 0;
                 player.killed_by = Some(session.name_of(*killer).to_string());
+                // A frag being cooked drops (the server throws it down for us).
+                player.hand = None;
+                player.wheel = None;
             }
             _ => {}
         }
@@ -336,9 +388,14 @@ fn look(
     mouse: Res<AccumulatedMouseMotion>,
     controls: Res<Controls>,
     settings: Res<Settings>,
+    input: ActionInput,
     mut player: ResMut<LocalPlayer>,
 ) {
-    if !controls.captured || mouse.delta == Vec2::ZERO {
+    if !controls.captured || !player.alive {
+        player.wheel = None;
+        return;
+    }
+    if grenade_wheel(&input, mouse.delta, &mut player) || mouse.delta == Vec2::ZERO {
         return;
     }
     // Aiming turns the view slower in step with the zoom, so it feels the same on screen.
@@ -351,6 +408,33 @@ fn look(
     pay_off(&mut p.view_kick.y, turn);
     p.yaw += turn;
     p.pitch = pitch;
+}
+
+/// Holding the grenade key opens the wheel, and the mouse moves its cursor
+/// instead of the view. Letting go takes the grenade picked into the hand.
+/// Not while a frag is cooking: that one cannot be put back. Returns true
+/// while the wheel has the mouse.
+fn grenade_wheel(input: &ActionInput, delta: Vec2, player: &mut LocalPlayer) -> bool {
+    let cooking = player.hand.is_some_and(|hand| hand.fuse.is_some());
+    if player.wheel.is_none() && input.just_pressed(Action::Grenade) && !cooking {
+        player.wheel = Some(Vec2::ZERO);
+    }
+    let Some(cursor) = player.wheel else {
+        return false;
+    };
+    if input.pressed(Action::Grenade) {
+        player.wheel = Some((cursor + delta / WHEEL_TRAVEL).clamp_length_max(1.0));
+        return true;
+    }
+    player.wheel = None;
+    let kind = wheel_choice(cursor, player.last_grenade);
+    if player.grenades[kind as usize] >= 1.0 {
+        player.last_grenade = kind;
+        player.hand = Some(InHand { kind, fuse: None });
+        // The other hand is busy: a reload is abandoned.
+        player.reload = 0.0;
+    }
+    true
 }
 
 fn movement(time: Res<Time>, input: ActionInput, map: Res<GameMap>, mut player: ResMut<LocalPlayer>) {
@@ -399,7 +483,7 @@ fn movement(time: Res<Time>, input: ActionInput, map: Res<GameMap>, mut player: 
         }
     }
 
-    let aiming = input.pressed(Action::Aim) && !p.reloading() && p.slot != KNIFE_SLOT;
+    let aiming = input.pressed(Action::Aim) && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
     p.aim += (aiming as u8 as f32 - p.aim) * (dt * 14.0).min(1.0);
 
     if p.grounded {
@@ -548,6 +632,9 @@ fn follow_camera(
     player.headshot_marker = (player.headshot_marker - dt).max(0.0);
     player.kill_marker = (player.kill_marker - dt * 1.6).max(0.0);
     player.damage_flash = (player.damage_flash - dt * 2.5).max(0.0);
+    player.blind = (player.blind - dt).max(0.0);
+    let holding = player.hand.is_some() as u8 as f32;
+    player.hold += (holding - player.hold) * (dt * 12.0).min(1.0);
     let eye_target = if player.crouching { CROUCH_EYE } else { STAND_EYE };
     player.view_height += (eye_target - player.view_height) * (dt * 14.0).min(1.0);
 
@@ -584,6 +671,7 @@ fn follow_camera(
     // 0 -> 1 as the old magazine drops away, 1 -> 0 as the new one goes in.
     let magazine_out = smooth((reload - 0.15) / 0.2) * smooth((0.8 - reload) / 0.2);
     let throw = (player.throw_anim * std::f32::consts::PI).sin();
+    let hold = smooth(player.hold);
 
     // 1 -> 0 as a weapon just switched to comes up from below.
     let drawing = smooth(player.draw / DRAW_TIME);
@@ -606,8 +694,9 @@ fn follow_camera(
         + kick
         + Vec3::new(0.0, -0.06, 0.0) * tipped
         + Vec3::new(0.0, -0.16, 0.05) * throw
+        + Vec3::new(0.04, -0.14, 0.06) * hold
         + Vec3::new(0.0, -0.3, 0.0) * drawing;
-    gun.rotation = Quat::from_rotation_x(kick_pitch + tipped * 0.45 - throw * 0.5 - drawing * 0.9)
+    gun.rotation = Quat::from_rotation_x(kick_pitch + tipped * 0.45 - throw * 0.5 - hold * 0.35 - drawing * 0.9)
         * Quat::from_rotation_y(kick_yaw)
         * Quat::from_rotation_z(tipped * 0.6);
 

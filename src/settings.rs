@@ -110,7 +110,7 @@ impl Action {
             Action::Fire => ("Fire", "fire", Mouse(MouseButton::Left)),
             Action::Aim => ("Aim down sights", "aim", Mouse(MouseButton::Right)),
             Action::Reload => ("Reload", "reload", Key(KeyCode::KeyR)),
-            Action::Grenade => ("Grenade", "grenade", Key(KeyCode::KeyG)),
+            Action::Grenade => ("Grenade (hold: wheel)", "grenade", Key(KeyCode::KeyG)),
             Action::Primary => ("Primary gun", "primary", Key(KeyCode::Digit1)),
             Action::Secondary => ("Secondary gun", "secondary", Key(KeyCode::Digit2)),
             Action::Knife => ("Knife", "knife", Key(KeyCode::Digit3)),
@@ -394,8 +394,10 @@ impl Settings {
                     let action = key
                         .strip_prefix("bind.")
                         .and_then(|name| Action::ALL.into_iter().find(|a| a.info().1 == name));
+                    // Swapped in, so that a key saved for one action never ends
+                    // up doubling the default of an action added since.
                     if let (Some(action), Some(bind)) = (action, Bind::parse(value)) {
-                        settings.binds[action as usize] = bind;
+                        settings.set_bind(action, bind);
                     }
                 }
             }
@@ -850,6 +852,14 @@ mod tests {
         assert_eq!(Bind::Key(KeyCode::ShiftLeft).display(), "LEFT SHIFT");
         assert_eq!(Bind::Key(KeyCode::KeyW).display(), "W");
         assert_eq!(Bind::Mouse(MouseButton::Right).display(), "MOUSE RIGHT");
+    }
+
+    #[test]
+    fn a_saved_key_never_ends_up_bound_twice() {
+        // Crouch saved on the key that is the grenade's default.
+        let parsed = Settings::parse("bind.crouch = KeyG\n");
+        assert_eq!(parsed.bind(Action::Crouch), Bind::Key(KeyCode::KeyG));
+        assert_ne!(parsed.bind(Action::Grenade), Bind::Key(KeyCode::KeyG));
     }
 
     #[test]

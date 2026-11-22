@@ -66,15 +66,69 @@ pub fn score_limit(mode: u8, frag_limit: u32) -> u32 {
     }
 }
 
-/// Grenades carried at most. One comes back every `GRENADE_RECHARGE` seconds.
-pub const GRENADE_MAX: f32 = 2.0;
-pub const GRENADE_RECHARGE: f32 = 12.0;
-/// Seconds from the throw to the explosion.
-pub const GRENADE_FUSE: f32 = 2.2;
+/// The kinds of grenade, indexes into `GRENADES`.
+pub type GrenadeKind = u8;
+pub const FRAG: GrenadeKind = 0;
+pub const FLASH: GrenadeKind = 1;
+pub const SMOKE: GrenadeKind = 2;
+pub const GRENADE_KINDS: usize = 3;
+
+pub struct GrenadeStats {
+    pub name: &'static str,
+    /// Carried at most. One comes back every `recharge` seconds.
+    pub max: f32,
+    pub recharge: f32,
+    /// Goes off as soon as it hits something, instead of on a timer.
+    pub impact: bool,
+    /// Timed grenades: seconds from pulling the pin to it going off. Holding
+    /// on to it (cooking) uses some of that up before the throw. Impact
+    /// grenades: the longest one flies before going off anyway.
+    pub fuse: f32,
+}
+
+pub const GRENADES: [GrenadeStats; GRENADE_KINDS] = [
+    GrenadeStats {
+        name: "Frag",
+        max: 2.0,
+        recharge: 12.0,
+        impact: false,
+        fuse: 2.2,
+    },
+    GrenadeStats {
+        name: "Flash",
+        max: 2.0,
+        recharge: 15.0,
+        impact: true,
+        fuse: 5.0,
+    },
+    GrenadeStats {
+        name: "Smoke",
+        max: 1.0,
+        recharge: 20.0,
+        impact: true,
+        fuse: 5.0,
+    },
+];
+
+pub fn grenade(kind: GrenadeKind) -> &'static GrenadeStats {
+    &GRENADES[kind as usize % GRENADE_KINDS]
+}
+
 pub const GRENADE_THROW_SPEED: f32 = 21.0;
-/// Damage at the centre of the blast, falling off to nothing at `GRENADE_RADIUS`.
+/// Right-click throws are lobbed gently, this much as hard.
+pub const GRENADE_LOB: f32 = 0.45;
+/// Frag damage at the centre of the blast, falling off to nothing at `GRENADE_RADIUS`.
 pub const GRENADE_DAMAGE: f32 = 130.0;
 pub const GRENADE_RADIUS: f32 = 7.0;
+/// A flashbang blinds anyone who can see it within this many metres...
+pub const FLASH_RANGE: f32 = 30.0;
+/// ...for up to this many seconds (right next to it, looking at it).
+pub const FLASH_BLIND: f32 = 4.0;
+/// A smoke cloud is about this big around, and lasts this many seconds.
+pub const SMOKE_RADIUS: f32 = 4.5;
+pub const SMOKE_TIME: f32 = 14.0;
+/// The cloud sits this high above where the grenade went off.
+pub const SMOKE_RISE: f32 = 1.2;
 /// Grenades are simulated in steps of exactly this long on the server and on
 /// every client, so they all see the same bounces.
 pub const GRENADE_STEP: f32 = 1.0 / 60.0;
@@ -89,7 +143,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-5:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-6:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -142,8 +196,16 @@ pub enum ClientMsg {
         /// It struck the head (never for the knife).
         headshot: bool,
     },
-    /// Throw a grenade. The server simulates it and deals the damage.
-    Grenade { origin: [f32; 3], vel: [f32; 3] },
+    /// Pull the pin of a frag: its fuse starts burning in our hand. If it is
+    /// held too long it goes off there; if we die holding it, it drops.
+    Cook,
+    /// Throw a grenade: the frag being cooked, or a flash or smoke. The
+    /// server simulates it and deals the damage.
+    Grenade {
+        kind: GrenadeKind,
+        origin: [f32; 3],
+        vel: [f32; 3],
+    },
 }
 
 /// Client -> server, unreliable, sent every fixed tick while alive.
@@ -217,12 +279,16 @@ pub enum ServerMsg {
     },
     Grenade {
         id: u32,
+        kind: GrenadeKind,
         pos: [f32; 3],
         vel: [f32; 3],
+        /// Seconds until it goes off.
+        fuse: f32,
     },
     Explosion {
-        /// The grenade that went off.
+        /// The grenade that went off (or one never thrown, gone off in hand).
         id: u32,
+        kind: GrenadeKind,
         pos: [f32; 3],
     },
 }

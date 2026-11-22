@@ -16,9 +16,10 @@ use bevy::{
 use crate::{
     AppState, LaunchArgs,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
+    grenade::SmokeFog,
     map::MAP_NAMES,
     net::{self, Connection, MenuStatus, Session},
-    player::{Controls, DASH_COOLDOWN, LocalPlayer},
+    player::{Controls, DASH_COOLDOWN, LocalPlayer, WHEEL_DIRS, wheel_choice},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
@@ -92,7 +93,7 @@ impl Plugin for UiPlugin {
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
                     update_rosters,
-                    (update_hud, update_hud_shapes, update_overlays, update_key_hints)
+                    (update_hud, update_hud_shapes, update_overlays, update_key_hints, update_wheel)
                         .run_if(in_state(AppState::Playing)),
                 ),
             );
@@ -1027,7 +1028,14 @@ enum Hud {
     /// The key of one of the three weapon slots, and what is in it.
     SlotKey(usize),
     SlotName(usize),
+    /// The grenade key, and the name of each kind of grenade.
     GrenadeKey,
+    GrenadeName(usize),
+    /// Under the crosshair: the grenade in hand, and what a click does with it
+    /// (or a cooking frag's fuse).
+    Hand,
+    /// A kind of grenade on the wheel.
+    WheelName(usize),
     /// "FRAGGED somebody".
     Kill,
     /// Streaks and revenge, under the kill line.
@@ -1044,8 +1052,8 @@ enum Bar {
     Dash,
     /// Rounds left in the magazine, or how far along the reload is.
     Ammo,
-    /// One grenade, filling up as it recharges.
-    Grenade(usize),
+    /// One grenade (kind, which one), filling up as it recharges.
+    Grenade(usize, usize),
 }
 
 /// The box around one of the three weapon slots; lit when it is in hand.
@@ -1061,6 +1069,10 @@ struct FeedRow(usize);
 enum Overlay {
     /// Red flash over the whole screen when hurt.
     DamageFlash,
+    /// White over the whole screen while blinded by a flashbang.
+    Blind,
+    /// Grey over the whole screen while inside a smoke cloud.
+    Smoke,
     /// One of the four ticks that appear around the crosshair on a hit.
     HitTick,
 }
@@ -1190,6 +1202,139 @@ fn chip_node() -> Node {
     }
 }
 
+/// One bar per grenade of a kind carried, each filling up as it recharges.
+fn grenade_bars(kind: usize) -> impl Bundle {
+    let bars = (0..GRENADES[kind].max as usize)
+        .map(move |index| (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(kind, index), TEXT)]));
+    (
+        Node {
+            column_gap: px(4),
+            ..default()
+        },
+        Children::spawn(SpawnIter(bars)),
+    )
+}
+
+/// A kind of grenade: its name and how many are carried.
+fn grenade_chip(kind: usize) -> impl Bundle {
+    (
+        chip_node(),
+        children![hud_text(14.0, DIM, Hud::GrenadeName(kind)), grenade_bars(kind)],
+    )
+}
+
+/// The grenade wheel, open while the grenade key is held.
+#[derive(Component)]
+struct WheelRoot;
+/// One kind of grenade on the wheel; lit when the cursor picks it.
+#[derive(Component)]
+struct WheelOption(usize);
+/// The dot that follows the mouse on the wheel.
+#[derive(Component)]
+struct WheelCursor;
+
+/// Across the whole wheel, and from its middle to the middle of an option.
+const WHEEL_SIZE: f32 = 320.0;
+const WHEEL_REACH: f32 = 105.0;
+const WHEEL_OPTION: Vec2 = Vec2::new(116.0, 58.0);
+
+fn wheel_option(kind: usize) -> impl Bundle {
+    let at = Vec2::splat(WHEEL_SIZE / 2.0) + WHEEL_DIRS[kind] * WHEEL_REACH - WHEEL_OPTION / 2.0;
+    (
+        WheelOption(kind),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(at.x),
+            top: px(at.y),
+            width: px(WHEEL_OPTION.x),
+            height: px(WHEEL_OPTION.y),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            row_gap: px(6),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(8)),
+            ..default()
+        },
+        BackgroundColor(HUD_PANEL),
+        BorderColor::all(Color::NONE),
+        children![hud_text(16.0, TEXT, Hud::WheelName(kind)), grenade_bars(kind)],
+    )
+}
+
+fn spawn_wheel(commands: &mut Commands) {
+    commands.spawn((
+        hud_layer(),
+        children![(
+            WheelRoot,
+            Node {
+                width: px(WHEEL_SIZE),
+                height: px(WHEEL_SIZE),
+                display: Display::None,
+                ..default()
+            },
+            children![
+                (
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: percent(100),
+                        height: percent(100),
+                        border_radius: BorderRadius::all(px(WHEEL_SIZE / 2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.03, 0.04, 0.07, 0.35)),
+                ),
+                wheel_option(0),
+                wheel_option(1),
+                wheel_option(2),
+                (
+                    WheelCursor,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: px(10),
+                        height: px(10),
+                        border_radius: BorderRadius::all(px(5)),
+                        ..default()
+                    },
+                    BackgroundColor(ACCENT),
+                ),
+            ],
+        )],
+    ));
+}
+
+/// Shows the wheel while it is open, with the option the cursor picks lit up
+/// and the ones that are not ready dimmed.
+fn update_wheel(
+    player: Res<LocalPlayer>,
+    mut root: Single<&mut Node, With<WheelRoot>>,
+    mut cursor_dot: Single<&mut Node, (With<WheelCursor>, Without<WheelRoot>)>,
+    mut options: Query<(&WheelOption, &mut BackgroundColor, &mut BorderColor)>,
+) {
+    set_shown(&mut root, player.wheel.is_some());
+    let Some(cursor) = player.wheel else {
+        return;
+    };
+    let at = Vec2::splat(WHEEL_SIZE / 2.0) + cursor * WHEEL_REACH - Vec2::splat(5.0);
+    if cursor_dot.left != px(at.x) || cursor_dot.top != px(at.y) {
+        cursor_dot.left = px(at.x);
+        cursor_dot.top = px(at.y);
+    }
+    let chosen = wheel_choice(cursor, player.last_grenade) as usize;
+    for (option, mut background, mut border) in &mut options {
+        let ready = player.grenades[option.0] >= 1.0;
+        let (fill, edge) = match (option.0 == chosen, ready) {
+            (true, true) => (Color::srgba(1.0, 0.62, 0.2, 0.25), ACCENT),
+            (true, false) => (Color::srgba(1.0, 1.0, 1.0, 0.08), DIM),
+            (false, _) => (HUD_PANEL, Color::NONE),
+        };
+        if background.0 != fill {
+            background.0 = fill;
+            *border = BorderColor::all(edge);
+        }
+    }
+}
+
 /// A weapon slot: its key and what is in it.
 fn slot_chip(slot: usize) -> impl Bundle {
     (
@@ -1243,6 +1388,8 @@ fn hit_tick(dx: f32, dy: f32) -> impl Bundle {
 
 fn spawn_hud(mut commands: Commands) {
     commands.spawn((hud_layer(), Overlay::DamageFlash, BackgroundColor(Color::NONE)));
+    commands.spawn((hud_layer(), Overlay::Smoke, BackgroundColor(Color::NONE)));
+    commands.spawn((hud_layer(), Overlay::Blind, BackgroundColor(Color::NONE)));
 
     // Crosshair: a white dot with a dark rim, so it shows against anything.
     commands.spawn((
@@ -1277,6 +1424,10 @@ fn spawn_hud(mut commands: Commands) {
             ],
         )],
     ));
+
+    // The grenade in hand, just under the crosshair.
+    commands.spawn((hud_line(55.0), children![hud_text(18.0, ACCENT, Hud::Hand)]));
+    spawn_wheel(&mut commands);
 
     // Death / respawn message, a bit above the middle of the screen.
     commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
@@ -1420,18 +1571,20 @@ fn spawn_hud(mut commands: Commands) {
                         ..default()
                     },
                     children![
-                        slot_chip(0),
-                        slot_chip(1),
-                        slot_chip(2),
-                        (
-                            chip_node(),
-                            children![
-                                hud_text(12.0, DIM, Hud::GrenadeKey),
-                                (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(0), TEXT)]),
-                                (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(1), TEXT)]),
-                            ],
-                        ),
+                        hud_text(12.0, DIM, Hud::GrenadeKey),
+                        grenade_chip(0),
+                        grenade_chip(1),
+                        grenade_chip(2),
                     ],
+                ),
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::End,
+                        column_gap: px(4),
+                        ..default()
+                    },
+                    children![slot_chip(0), slot_chip(1), slot_chip(2)],
                 ),
                 (
                     Node {
@@ -1573,7 +1726,7 @@ const KEY_HINTS: &[(&[Action], &str)] = &[
     (&[Action::Fire], "Fire"),
     (&[Action::Aim], "Aim down sights"),
     (&[Action::Reload], "Reload"),
-    (&[Action::Grenade], "Grenade"),
+    (&[Action::Grenade], "Grenades (hold for the wheel), click to throw"),
     (&[Action::Primary, Action::Secondary, Action::Knife], "Weapons"),
     (&[Action::Scores], "Scoreboard"),
 ];
@@ -1751,6 +1904,32 @@ fn update_hud(
                 if slot == player.slot { TEXT } else { DIM },
             ),
             Hud::GrenadeKey => (settings.bind(Action::Grenade).display().to_string(), DIM),
+            Hud::WheelName(kind) => (
+                GRENADES[kind].name.to_uppercase(),
+                if player.grenades[kind] >= 1.0 { TEXT } else { DIM },
+            ),
+            Hud::GrenadeName(kind) => (
+                GRENADES[kind].name.to_uppercase(),
+                if player.hand.is_some_and(|hand| hand.kind as usize == kind) {
+                    ACCENT
+                } else if player.grenades[kind] >= 1.0 {
+                    TEXT
+                } else {
+                    DIM
+                },
+            ),
+            Hud::Hand => match player.hand.filter(|_| player.alive) {
+                Some(hand) => {
+                    let name = GRENADES[hand.kind as usize].name.to_uppercase();
+                    match hand.fuse {
+                        // About to go off in hand: red.
+                        Some(fuse) => (format!("{name}  {:.1}", fuse.max(0.0)), if fuse < 0.8 { DANGER } else { ACCENT }),
+                        None if hand.kind == FRAG => (format!("{name}  -  click to pull the pin"), TEXT),
+                        None => (format!("{name}  -  click to throw"), TEXT),
+                    }
+                }
+                None => (String::new(), ACCENT),
+            },
             Hud::Kill => notice(&notices.kill, TEXT),
             Hud::Banner => notice(&notices.banner, ACCENT),
         };
@@ -1804,8 +1983,8 @@ fn update_hud_shapes(
             Bar::Armor => (armor_part, ARMOR),
             Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
             Bar::Ammo => (ammo_part, ammo_color),
-            Bar::Grenade(index) => {
-                let part = player.grenades - index as f32;
+            Bar::Grenade(kind, index) => {
+                let part = player.grenades[kind] - index as f32;
                 (part, if part >= 1.0 { TEXT } else { DIM })
             }
         };
@@ -1846,6 +2025,7 @@ fn update_overlays(
     session: Res<Session>,
     map: Res<GameMap>,
     player: Res<LocalPlayer>,
+    smoke_fog: Res<SmokeFog>,
     controls: Res<Controls>,
     mut overlays: Query<(&Overlay, &mut BackgroundColor)>,
     mut nodes: ParamSet<(
@@ -1867,6 +2047,9 @@ fn update_overlays(
     for (overlay, mut background) in &mut overlays {
         let wanted = match overlay {
             Overlay::DamageFlash => Color::srgba(0.8, 0.0, 0.0, player.damage_flash * 0.35),
+            // Pure white until the last second, then it clears.
+            Overlay::Blind => Color::srgba(1.0, 1.0, 1.0, player.blind.min(1.0)),
+            Overlay::Smoke => Color::srgba(0.6, 0.62, 0.62, smoke_fog.0 * 0.97),
             Overlay::HitTick => tick_color,
         };
         if background.0 != wanted {

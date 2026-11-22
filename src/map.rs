@@ -4,6 +4,8 @@
 
 use bevy::math::Vec3;
 
+use crate::protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE};
+
 /// Half extents of the player's collision box when standing (0.8 x 1.8 x 0.8 m).
 pub const PLAYER_HALF: Vec3 = Vec3::new(0.4, 0.9, 0.4);
 /// The same when crouching or sliding (1.2 m tall).
@@ -14,6 +16,8 @@ pub const CROUCH_EYE: f32 = 1.0;
 /// Half the side of the little box a grenade collides as.
 pub const GRENADE_HALF: f32 = 0.12;
 const GRENADE_GRAVITY: f32 = 20.0;
+/// A grenade hitting something faster than this makes a sound.
+pub const BOUNCE_SOUND: f32 = 3.0;
 
 pub const MAP_NAMES: [&str; 2] = ["Arena", "Depot"];
 
@@ -342,8 +346,9 @@ impl Map {
     }
 
     /// Advances a grenade by one `GRENADE_STEP`: it falls, bounces off blocks
-    /// and rolls to a stop. Returns true on a bounce hard enough to hear.
-    pub fn step_grenade(&self, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> bool {
+    /// and rolls to a stop. Returns the speed of its hardest contact with a
+    /// block, 0 if it touched none (above `BOUNCE_SOUND` it can be heard).
+    pub fn step_grenade(&self, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> f32 {
         const RESTITUTION: f32 = 0.42;
         /// Share of the sideways speed kept through each contact.
         const GRIP: f32 = 0.84;
@@ -351,7 +356,7 @@ impl Map {
         vel.y -= GRENADE_GRAVITY * dt;
         let steps = (vel.length() * dt / 0.1).ceil().clamp(1.0, 64.0);
         let sub_dt = dt / steps;
-        let mut bounced = false;
+        let mut hardest: f32 = 0.0;
         for _ in 0..steps as usize {
             for axis in [0, 2, 1] {
                 let delta = vel[axis] * sub_dt;
@@ -371,10 +376,10 @@ impl Map {
                 *vel *= GRIP;
                 // Too slow to bounce: it stays put on that axis (resting on the floor).
                 vel[axis] = if impact > 1.5 { -vel[axis] * RESTITUTION / GRIP } else { 0.0 };
-                bounced |= impact > 3.0;
+                hardest = hardest.max(impact);
             }
         }
-        bounced
+        hardest
     }
 
     /// Returns the jump pad at the player's `feet`, if any.
@@ -400,6 +405,35 @@ impl Map {
         let distance = from.distance(to);
         distance < 1e-3 || self.raycast(from, (to - from) / distance, distance).is_none()
     }
+
+    /// Seconds somebody with their eyes at `eye`, looking along `look`, is
+    /// blinded by a flashbang going off at `flash`. Looking right at it is
+    /// worst; with your back to it, it still dazzles a little.
+    pub fn flash_blindness(&self, flash: Vec3, eye: Vec3, look: Vec3) -> f32 {
+        let flash = flash + Vec3::Y * 0.1;
+        let to = flash - eye;
+        let distance = to.length();
+        if distance >= FLASH_RANGE || !self.line_of_sight(flash, eye) {
+            return 0.0;
+        }
+        let facing = if distance < 1.5 { 1.0 } else { look.dot(to / distance) };
+        let facing = 0.15 + 0.85 * ((facing + 0.2) / 0.9).clamp(0.0, 1.0);
+        let near = 1.0 - (distance / FLASH_RANGE).powi(2);
+        FLASH_BLIND * near * facing
+    }
+}
+
+/// The middle of the smoke cloud from a smoke grenade gone off at `pos`.
+pub fn smoke_center(pos: Vec3) -> Vec3 {
+    pos + Vec3::Y * SMOKE_RISE
+}
+
+/// True if a smoke cloud centred at `center` hides `to` from `from`.
+pub fn smoke_blocks(center: Vec3, from: Vec3, to: Vec3) -> bool {
+    let line = to - from;
+    let t = ((center - from).dot(line) / line.length_squared().max(1e-6)).clamp(0.0, 1.0);
+    // A little smaller than it looks: its edges are thin.
+    (from + line * t).distance(center) < SMOKE_RADIUS * 0.85
 }
 
 /// Floor, the four walls and an invisible ceiling.
@@ -581,13 +615,38 @@ mod tests {
     }
 
     #[test]
+    fn a_flash_blinds_most_when_looked_at() {
+        let map = Map::arena();
+        let eye = map.spawns[0].pos + Vec3::Y * 0.7;
+        let look = look_dir(map.spawns[0].yaw, 0.0);
+        let flash = eye + look * 6.0 - Vec3::Y * 1.0;
+        assert!(map.line_of_sight(flash + Vec3::Y * 0.1, eye), "no open space in front of the spawn");
+        let facing = map.flash_blindness(flash, eye, look);
+        let away = map.flash_blindness(flash, eye, -look);
+        assert!(facing > 2.5, "facing {facing}");
+        assert!(away > 0.0 && away < facing * 0.3, "away {away}");
+        // Out of range, nothing.
+        assert_eq!(map.flash_blindness(eye + look * (FLASH_RANGE + 1.0), eye, look), 0.0);
+    }
+
+    #[test]
+    fn smoke_hides_only_what_is_behind_it() {
+        let center = smoke_center(Vec3::ZERO);
+        let from = Vec3::new(-20.0, 1.6, 0.0);
+        assert!(smoke_blocks(center, from, Vec3::new(20.0, 1.6, 0.0)));
+        // Well clear of the cloud, on either side.
+        assert!(!smoke_blocks(center, from, Vec3::new(-10.0, 1.6, 0.0)));
+        assert!(!smoke_blocks(center, from, Vec3::new(20.0, 1.6, 12.0)));
+    }
+
+    #[test]
     fn grenades_bounce_and_come_to_rest() {
         let map = Map::arena();
         let mut pos = Vec3::new(10.0, 2.0, 0.0);
         let mut vel = Vec3::new(6.0, 4.0, 3.0);
         let mut bounces = 0;
         for _ in 0..600 {
-            bounces += map.step_grenade(&mut pos, &mut vel, 1.0 / 60.0) as u32;
+            bounces += (map.step_grenade(&mut pos, &mut vel, 1.0 / 60.0) > BOUNCE_SOUND) as u32;
         }
         assert!(bounces >= 1);
         assert!((pos.y - GRENADE_HALF).abs() < 1e-3, "resting height {}", pos.y);

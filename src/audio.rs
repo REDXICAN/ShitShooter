@@ -64,11 +64,19 @@ pub enum Sound {
     Land,
     /// The clack of a magazine going out or in.
     Reload,
+    /// The click of a grenade's pin being pulled.
+    Pin,
     /// The swish of a grenade being thrown.
     Throw,
     /// A grenade knocking against something.
     Bounce,
     Explosion,
+    /// A flashbang's sharp bang.
+    Flashbang,
+    /// A smoke grenade bursting open with a hiss.
+    SmokePop,
+    /// The ringing in our ears after being flashed.
+    Ringing,
     /// We took somebody's last armor.
     ArmorBreak,
     /// Somebody took our last armor.
@@ -96,6 +104,8 @@ struct Sounds {
     chime: Handle<AudioSource>,
     shatter: Handle<AudioSource>,
     charge: Handle<AudioSource>,
+    hiss: Handle<AudioSource>,
+    ring: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
     rng: u32,
 }
@@ -116,6 +126,8 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         chime: add(synth_chime()),
         shatter: add(synth_shatter()),
         charge: add(synth_charge()),
+        hiss: add(synth_hiss()),
+        ring: add(synth_ring()),
         rng: 0x2545_f491,
     });
 }
@@ -145,9 +157,14 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
                 0.62 + random * 0.08,
             ),
             Sound::Reload => (sounds.clack.clone(), 0.5, 0.95 + random * 0.1),
+            Sound::Pin => (sounds.clack.clone(), 0.35, 2.4 + random * 0.2),
             Sound::Throw => (sounds.swish.clone(), 0.5, 0.95 + random * 0.1),
             Sound::Bounce => (sounds.clack.clone(), 0.8, 1.5 + random * 0.3),
             Sound::Explosion => (sounds.explosion.clone(), 1.0, 0.92 + random * 0.16),
+            // Sped up, the explosion turns into a short, hard crack.
+            Sound::Flashbang => (sounds.explosion.clone(), 1.0, 1.9 + random * 0.1),
+            Sound::SmokePop => (sounds.hiss.clone(), 1.0, 0.95 + random * 0.1),
+            Sound::Ringing => (sounds.ring.clone(), 0.35, 1.0),
             Sound::ArmorBreak => (sounds.shatter.clone(), 0.75, 1.2 + random * 0.06),
             // Played low and slow it sounds heavier: something of ours gave way.
             Sound::ArmorBroken => (sounds.shatter.clone(), 1.0, 0.68),
@@ -163,7 +180,8 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Some(position) => {
                 let range = match cue.sound {
                     Sound::Gunshot(_) => GUNSHOT_FULL_VOLUME_RANGE,
-                    Sound::Explosion => EXPLOSION_FULL_VOLUME_RANGE,
+                    Sound::Explosion | Sound::Flashbang => EXPLOSION_FULL_VOLUME_RANGE,
+                    Sound::SmokePop => GUNSHOT_FULL_VOLUME_RANGE,
                     _ => FOOTSTEP_FULL_VOLUME_RANGE,
                 };
                 commands.spawn((
@@ -411,6 +429,30 @@ fn synth_explosion() -> Vec<f32> {
     })
 }
 
+/// A pop, then a long hiss of gas that slowly dies down.
+fn synth_hiss() -> Vec<f32> {
+    let mut rng = 0x0dd5_e0a1;
+    let mut low_passed = 0.0;
+    let mut band = 0.0;
+    samples(1.6, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.35;
+        band += (low_passed - band) * 0.08;
+        let pop = band * (-t * 30.0).exp() * 6.0;
+        let hiss = (noise - low_passed) * (t * 30.0).min(1.0) * (-t * 1.6).exp() * 1.4;
+        (pop + hiss).tanh() * 0.8
+    })
+}
+
+/// A high, thin whine that fades slowly: ears ringing.
+fn synth_ring() -> Vec<f32> {
+    samples(3.5, |t| {
+        let wobble = 1.0 + 0.002 * (TAU * 5.0 * t).sin();
+        let tone = (TAU * 3150.0 * wobble * t).sin() + 0.2 * (TAU * 4720.0 * t).sin();
+        tone * (t * 6.0).min(1.0) * (-t * 0.9).exp() * 0.75
+    })
+}
+
 /// A short crack of noise over a falling bass thump.
 fn synth_gunshot() -> Vec<f32> {
     let mut rng = 0x9e37_79b9;
@@ -505,6 +547,8 @@ mod tests {
             synth_chime(),
             synth_shatter(),
             synth_charge(),
+            synth_hiss(),
+            synth_ring(),
         ];
         all.extend((0..4).map(synth_footstep));
         for sound in all {
