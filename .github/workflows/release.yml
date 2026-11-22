@@ -1,0 +1,83 @@
+# Every push to main builds the game and the launcher on Windows and publishes
+# them as a new GitHub release (build-1, build-2, ...). The launcher downloads
+# from the latest release, so friends get each push the next time they start it.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # Edits to the README and other docs do not need a new build.
+    paths-ignore: ["**.md"]
+  # Lets you start a build by hand from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Builds run one at a time, so releases come out in push order. If several
+# pushes queue up, only the newest waiting one is built.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Same as build-release.ps1: links the C runtime into the exe, so it runs on
+  # PCs without the Visual C++ Redistributable.
+  RUSTFLAGS: -C target-feature=+crt-static
+  SHITSHOOTER_BUILD: build-${{ github.run_number }}
+  # How many releases to keep. Older ones are deleted (with their tags).
+  KEEP_RELEASES: 10
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --workspace
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory out | Out-Null
+          Copy-Item target\release\shitshooter.exe out\
+          Copy-Item target\release\ShitShooterLauncher.exe out\
+          Set-Content out\version.txt $env:SHITSHOOTER_BUILD -NoNewline
+          $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
+          Set-Content out\launcher-version.txt $launcher -NoNewline
+          Get-ChildItem out
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $subject = git log -1 --pretty=%s
+          @"
+          $subject
+
+          **New player?** Download **ShitShooterLauncher.exe** below, right-click it → Properties → tick **Unblock** → OK, then run it. It installs the game and keeps it up to date.
+
+          Commit: $env:GITHUB_SHA
+          "@ | Set-Content notes.md
+          gh release create $env:SHITSHOOTER_BUILD (Get-ChildItem out).FullName `
+            --target $env:GITHUB_SHA `
+            --title "ShitShooter $env:SHITSHOOTER_BUILD" `
+            --notes-file notes.md `
+            --latest
+
+      - name: Delete old releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $old = gh release list --limit 1000 --json tagName,createdAt `
+            --jq "sort_by(.createdAt) | reverse | .[$($env:KEEP_RELEASES):] | .[].tagName"
+          foreach ($tag in $old) {
+            if ($tag) { gh release delete $tag --yes --cleanup-tag }
+          }

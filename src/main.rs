@@ -23,6 +23,13 @@ use bevy::prelude::*;
 
 use crate::server::{Server, ServerSettings};
 
+/// The release build name (e.g. `build-42`) when built by the GitHub release
+/// workflow, otherwise the Cargo version. Shown in the log and crash message.
+pub const VERSION: &str = match option_env!("SHITSHOOTER_BUILD") {
+    Some(build) => build,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppState {
     #[default]
@@ -196,7 +203,7 @@ fn open_log_file() {
     }
     log_line(&format!(
         "ShitShooter {} starting on {} {}",
-        env!("CARGO_PKG_VERSION"),
+        VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
@@ -228,7 +235,7 @@ fn install_crash_reporter() {
         if REPORTED.swap(true, Ordering::SeqCst) {
             return;
         }
-        let mut message = format!("ShitShooter {} crashed.\n\n{info}\n", env!("CARGO_PKG_VERSION"));
+        let mut message = format!("ShitShooter {} crashed.\n\n{info}\n", VERSION);
         log_line(&format!("CRASH: {info}"));
         if let Some((path, _)) = LOG_FILE.get() {
             message.push_str(&format!("\nDetails were saved to:\n{}", path.display()));
