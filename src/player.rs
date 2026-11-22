@@ -14,6 +14,7 @@ use bevy::{
 
 use crate::{
     AppState,
+    gun_model::{GunHolder, ModelSizes},
     map::{self, CROUCH_EYE, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
@@ -604,9 +605,13 @@ fn apply_friction(vel: &mut Vec3, dt: f32) {
 fn follow_camera(
     time: Res<Time>,
     settings: Res<Settings>,
+    model_sizes: Res<ModelSizes>,
     mut player: ResMut<LocalPlayer>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
-    view_model: Single<(&mut Transform, &mut Visibility), (With<ViewModel>, Without<MainCamera>, Without<ViewModelPart>)>,
+    view_model: Single<
+        (&mut Transform, &mut Visibility, &mut GunHolder),
+        (With<ViewModel>, Without<MainCamera>, Without<ViewModelPart>),
+    >,
     mut parts: Query<
         (&ViewModelPart, &mut Transform, &mut Visibility),
         (Without<MainCamera>, Without<ViewModel>),
@@ -661,6 +666,8 @@ fn follow_camera(
     };
     let stats = player.weapon();
     let [width, height, length] = stats.size;
+    // Drawn as its model if it has one (once loaded), else as boxes.
+    let model = model_sizes.get(player.weapon_id());
     let reload = if player.reloading() {
         1.0 - player.reload / stats.reload
     } else {
@@ -686,10 +693,13 @@ fn follow_camera(
             0.0,
         )
     };
-    // Aimed: centred, with the front sight just under the crosshair.
-    let aimed = Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0);
+    // Aimed: centred, with the box gun's sight just under the crosshair, or a
+    // model's sights (its highest point) lined up with it.
+    let below_crosshair = model.map_or(height / 2.0 + 0.048, |size| size.y / 2.0 + 0.003);
+    let aimed = Vec3::new(0.0, -below_crosshair, -0.31 - length / 2.0);
 
-    let (mut gun, mut gun_visibility) = view_model.into_inner();
+    let (mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
+    holder.weapon = player.weapon_id();
     gun.translation = VIEW_MODEL_REST.lerp(aimed, player.aim)
         + kick
         + Vec3::new(0.0, -0.06, 0.0) * tipped
@@ -730,7 +740,7 @@ fn follow_camera(
         };
         transform.translation = at;
         transform.scale = size;
-        let wanted = if shown {
+        let wanted = if shown && model.is_none() {
             Visibility::Inherited
         } else {
             Visibility::Hidden

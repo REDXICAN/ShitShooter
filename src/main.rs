@@ -12,6 +12,7 @@ mod audio;
 mod combat;
 mod devtools;
 mod grenade;
+mod gun_model;
 mod map;
 mod net;
 mod player;
@@ -191,6 +192,7 @@ fn main() {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
+            gun_model::GunModelPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,
             ui::UiPlugin,

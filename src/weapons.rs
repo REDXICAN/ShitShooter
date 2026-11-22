@@ -35,6 +35,17 @@ pub struct Weapon {
     pub kick_side: f32,
     /// Damage is multiplied by this when a bullet hits the head.
     pub headshot: f32,
+    /// The 3D model drawn for it. Without one it is drawn as a few boxes of `size`.
+    pub model: Option<Model>,
+}
+
+/// A weapon's glTF model. It is scaled to the weapon's `size` length and centred
+/// where the box gun would be, so it needs no hand-tuned numbers.
+pub struct Model {
+    /// Under `assets/`.
+    pub path: &'static str,
+    /// The barrel points along +Z in the file (forward in the game is -Z).
+    pub barrel_plus_z: bool,
 }
 
 /// How far a knife reaches, in metres.
@@ -70,6 +81,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.014,
         kick_side: 0.006,
         headshot: 2.0,
+        model: Some(Model { path: "models/M4A1.gltf", barrel_plus_z: true }),
     },
     Weapon {
         name: "SMG",
@@ -90,6 +102,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.012,
         kick_side: 0.007,
         headshot: 1.6,
+        model: Some(Model { path: "models/MP7.gltf", barrel_plus_z: true }),
     },
     Weapon {
         name: "Shotgun",
@@ -110,6 +123,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.075,
         kick_side: 0.018,
         headshot: 1.5,
+        model: None,
     },
     Weapon {
         name: "Sniper",
@@ -130,6 +144,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.1,
         kick_side: 0.012,
         headshot: 2.5,
+        model: Some(Model { path: "models/SCAR.gltf", barrel_plus_z: true }),
     },
     Weapon {
         name: "Pistol",
@@ -150,6 +165,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.03,
         kick_side: 0.007,
         headshot: 2.0,
+        model: Some(Model { path: "models/M1911Tactical.gltf", barrel_plus_z: false }),
     },
     Weapon {
         name: "Knife",
@@ -170,6 +186,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.0,
         kick_side: 0.0,
         headshot: 1.0,
+        model: None,
     },
 ];
 

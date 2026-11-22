@@ -44,8 +44,8 @@ pub struct MainCamera;
 #[derive(Component)]
 pub struct ViewModel;
 
-/// The boxes the weapon in hand is made of. `player.rs` sizes and places them
-/// for whichever weapon it is.
+/// The boxes the weapon in hand is made of, for weapons without a model.
+/// `player.rs` sizes and places them for whichever weapon it is.
 #[derive(Component)]
 pub enum ViewModelPart {
     /// Receiver and barrel, or the knife's blade.
@@ -184,6 +184,7 @@ fn setup(
         Transform::from_xyz(0.0, 30.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
         children![(
             ViewModel,
+            crate::gun_model::GunHolder { weapon: crate::weapons::RIFLE, shadows: false },
             Transform::from_translation(crate::player::VIEW_MODEL_REST),
             Visibility::Hidden,
             children![

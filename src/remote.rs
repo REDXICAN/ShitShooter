@@ -9,6 +9,7 @@ use crate::{
     map::{CROUCH_HALF, PLAYER_HALF},
     net::{NetMsg, Session, SnapshotMsg},
     player::LocalPlayer,
+    gun_model::{GunHolder, GunModelSystems, ModelSizes},
     protocol::*,
     weapons::{WeaponId, weapon},
     world::SharedAssets,
@@ -37,6 +38,12 @@ impl Plugin for RemotePlugin {
                 (apply_snapshots, reset_on_spawn, interpolate)
                     .chain()
                     .in_set(RemoteSystems)
+                    .run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                Update,
+                size_gun_boxes
+                    .after(GunModelSystems::Show)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -76,8 +83,12 @@ struct HeadPivot;
 #[derive(Component)]
 struct Body;
 
+/// Holds the gun: its model, or `GunBox` for weapons without one.
 #[derive(Component)]
 struct Gun;
+
+#[derive(Component)]
+struct GunBox;
 
 #[derive(Resource, Default)]
 struct RemoteIndex(HashMap<PlayerId, Entity>);
@@ -195,10 +206,17 @@ fn apply_snapshots(
                                 ),
                                 (
                                     Gun,
-                                    Mesh3d(assets.cube.clone()),
-                                    MeshMaterial3d(assets.dark.clone()),
+                                    GunHolder { weapon: snap.weapon, shadows: true },
                                     Transform::from_translation(GUN_REST)
-                                        .with_scale(Vec3::new(0.09, 0.11, 0.6)),
+                                        .with_scale(Vec3::splat(REMOTE_GUN_SCALE)),
+                                    Visibility::default(),
+                                    children![(
+                                        GunBox,
+                                        Mesh3d(assets.cube.clone()),
+                                        MeshMaterial3d(assets.dark.clone()),
+                                        Transform::default(),
+                                        Visibility::Hidden,
+                                    )],
                                 ),
                             ],
                         ),
@@ -236,6 +254,8 @@ fn reset_on_spawn(
 
 /// Where the gun is held, relative to the head.
 const GUN_REST: Vec3 = Vec3::new(0.3, -0.3, -0.45);
+/// Twice the size it has in first person, so it reads at a distance.
+const REMOTE_GUN_SCALE: f32 = 2.1;
 
 type Part<T> = (With<T>, Without<RemotePlayer>);
 
@@ -244,7 +264,7 @@ fn interpolate(
     mut remotes: Query<(&mut RemotePlayer, &mut Transform, &Children)>,
     mut pivots: Query<(&mut Transform, &Children), (Part<HeadPivot>, Without<Body>, Without<Gun>)>,
     mut bodies: Query<&mut Transform, (Part<Body>, Without<HeadPivot>, Without<Gun>)>,
-    mut guns: Query<&mut Transform, (Part<Gun>, Without<HeadPivot>, Without<Body>)>,
+    mut guns: Query<(&mut Transform, &mut GunHolder), (Part<Gun>, Without<HeadPivot>, Without<Body>)>,
 ) {
     let render_time = time.elapsed_secs_f64() - INTERP_DELAY;
     let ease = (time.delta_secs() * 12.0).min(1.0);
@@ -295,14 +315,33 @@ fn interpolate(
                 pivot.translation.y = feet + body_height + NECK;
                 pivot.rotation = Quat::from_rotation_x(remote.pitch);
                 for part in parts.iter() {
-                    if let Ok(mut gun) = guns.get_mut(part) {
-                        // Twice the size it has in first person, so it reads at a distance.
-                        let [width, height, length] = weapon(remote.weapon).size;
-                        gun.scale = Vec3::new(width, height, length) * 2.1;
+                    if let Ok((mut gun, mut holder)) = guns.get_mut(part) {
+                        holder.weapon = remote.weapon;
                         gun.translation = GUN_REST + Vec3::new(0.0, -0.12, 0.1) * remote.reload_pose;
                         gun.rotation = Quat::from_rotation_x(-0.9 * remote.reload_pose);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Weapons without a model are a single box the size of the gun.
+fn size_gun_boxes(
+    model_sizes: Res<ModelSizes>,
+    guns: Query<(&GunHolder, &Children), With<Gun>>,
+    mut boxes: Query<(&mut Transform, &mut Visibility), With<GunBox>>,
+) {
+    for (holder, children) in &guns {
+        let modelled = model_sizes.get(holder.weapon).is_some();
+        for child in children.iter() {
+            if let Ok((mut transform, mut visibility)) = boxes.get_mut(child) {
+                transform.scale = Vec3::from(weapon(holder.weapon).size);
+                visibility.set_if_neq(if modelled {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                });
             }
         }
     }
