@@ -1,4 +1,4 @@
-//! Player settings: mouse, field of view, volume and key bindings, plus the
+//! Player settings: mouse, field of view, volume, window and key bindings, plus the
 //! name and address last typed into the menu. They are saved to a small text
 //! file so they survive restarts, and edited in the settings panel that opens
 //! from the main menu, the lobby and the pause menu.
@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use bevy::{
     audio::Volume, ecs::system::SystemParam, input_focus::InputFocus, picking::hover::Hovered, prelude::*,
     ui_widgets::{Activate, Button},
+    window::{PrimaryWindow, WindowMode},
 };
 
 use crate::{
@@ -28,6 +29,13 @@ impl Plugin for SettingsPlugin {
         } else {
             Settings::load()
         };
+        // Set before the window is opened, so the game does not start in a
+        // window and then jump to full screen.
+        let window_mode = settings.window_mode();
+        let world = app.world_mut();
+        for mut window in world.query::<&mut Window>().iter_mut(world) {
+            window.mode = window_mode;
+        }
         app.insert_resource(settings)
             .init_resource::<SettingsMenu>()
             .add_systems(OnExit(AppState::Playing), close_menu)
@@ -36,9 +44,11 @@ impl Plugin for SettingsPlugin {
                 (
                     escape_key.run_if(not(in_state(AppState::Playing))),
                     capture_bind,
+                    fullscreen_key,
                     sync_panel,
                     update_panel,
                     apply_volume,
+                    apply_display,
                 )
                     .chain(),
             );
@@ -208,6 +218,8 @@ pub struct Settings {
     pub fov: f32,
     /// Master volume, 0 to 1.
     pub volume: f32,
+    /// Borderless full screen, rather than a window.
+    pub fullscreen: bool,
     /// The guns carried in the two slots. Never the same gun twice.
     pub primary: WeaponId,
     pub secondary: WeaponId,
@@ -226,6 +238,7 @@ impl Default for Settings {
             ads_sensitivity: 1.0,
             fov: 75.0,
             volume: 0.8,
+            fullscreen: false,
             primary: RIFLE,
             secondary: PISTOL,
             binds: Action::ALL.map(|action| action.info().2),
@@ -299,12 +312,23 @@ impl Settings {
         }
     }
 
+    fn window_mode(&self) -> WindowMode {
+        if self.fullscreen {
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        } else {
+            WindowMode::Windowed
+        }
+    }
+
+    /// Mouse, sound and keys go back to their defaults; who you are, what you
+    /// carry and the window stay as they are.
     fn reset_controls(&mut self) {
         let defaults = Settings::default();
         *self = Settings {
             name: std::mem::take(&mut self.name),
             address: std::mem::take(&mut self.address),
             port: std::mem::take(&mut self.port),
+            fullscreen: self.fullscreen,
             primary: self.primary,
             secondary: self.secondary,
             persist: self.persist,
@@ -363,6 +387,7 @@ impl Settings {
                 "ads_sensitivity" => settings.ads_sensitivity = number.unwrap_or(settings.ads_sensitivity),
                 "fov" => settings.fov = number.unwrap_or(settings.fov),
                 "volume" => settings.volume = number.unwrap_or(settings.volume),
+                "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
                 _ => {
@@ -388,7 +413,8 @@ impl Settings {
             self.name, self.address, self.port, self.sensitivity, self.ads_sensitivity, self.fov, self.volume
         );
         text.push_str(&format!(
-            "primary = {}\nsecondary = {}\n",
+            "fullscreen = {}\nprimary = {}\nsecondary = {}\n",
+            self.fullscreen,
             weapon(self.primary).name,
             weapon(self.secondary).name
         ));
@@ -480,6 +506,9 @@ struct SettingsPanel;
 struct DialText(Dial);
 #[derive(Component)]
 struct BindText(Action);
+/// The text of the button that switches between a window and full screen.
+#[derive(Component)]
+struct DisplayText;
 
 /// Observer for any button that opens the settings panel.
 pub fn on_open_settings(_: On<Activate>, mut menu: ResMut<SettingsMenu>) {
@@ -550,16 +579,8 @@ fn sync_panel(
 
 fn spawn_panel(commands: &mut Commands) {
     let row = || Node {
-        width: px(390),
-        align_items: AlignItems::Center,
-        justify_content: JustifyContent::SpaceBetween,
-        column_gap: px(12),
-        ..default()
-    };
-    let column = || Node {
-        flex_direction: FlexDirection::Column,
-        row_gap: px(6),
-        ..default()
+        width: px(350),
+        ..ui::spread_row()
     };
     // A small button with fixed width.
     let key_button = |width: i32| {
@@ -588,85 +609,134 @@ fn spawn_panel(commands: &mut Commands) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            // Above everything, the pause menu included.
+            // Above everything, the pause menu included, and dark enough to hide it.
             GlobalZIndex(20),
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.94)),
+            BackgroundColor(Color::srgba(0.01, 0.012, 0.02, 0.98)),
         ))
         .with_children(|screen| {
             screen.spawn(ui::panel()).with_children(|panel| {
                 panel.spawn(ui::label("SETTINGS", 36.0, ACCENT));
 
-                panel.spawn(column()).with_children(|dials| {
-                    for dial in Dial::ALL {
-                        dials.spawn(row()).with_children(|row| {
-                            row.spawn(ui::label(dial.info().0, 18.0, DIM));
-                            row.spawn(Node {
-                                align_items: AlignItems::Center,
-                                column_gap: px(8),
-                                ..default()
-                            })
-                            .with_children(|controls| {
-                                controls
-                                    .spawn((key_button(34), children![(ui::label("-", 18.0, TEXT), Pickable::IGNORE)]))
-                                    .observe(turn_dial(dial, -1.0));
-                                controls.spawn((
-                                    ui::label("", 18.0, TEXT),
-                                    DialText(dial),
-                                    TextLayout::justify(Justify::Center),
-                                    Node {
-                                        width: px(70),
-                                        ..default()
-                                    },
-                                ));
-                                controls
-                                    .spawn((key_button(34), children![(ui::label("+", 18.0, TEXT), Pickable::IGNORE)]))
-                                    .observe(turn_dial(dial, 1.0));
-                            });
-                        });
-                    }
-                });
-
-                panel.spawn(ui::label("Click a control, then press the key or mouse button for it.", 15.0, DIM));
                 panel
                     .spawn(Node {
+                        column_gap: px(14),
+                        align_self: AlignSelf::Stretch,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    })
+                    .with_children(|cards| {
+                        cards.spawn(ui::card()).with_children(|dials| {
+                            dials.spawn(ui::section("Mouse and sound"));
+                            for dial in Dial::ALL {
+                                dials.spawn(row()).with_children(|row| {
+                                    row.spawn(ui::label(dial.info().0, 17.0, DIM));
+                                    row.spawn(Node {
+                                        align_items: AlignItems::Center,
+                                        column_gap: px(8),
+                                        ..default()
+                                    })
+                                    .with_children(|controls| {
+                                        controls
+                                            .spawn((
+                                                key_button(34),
+                                                children![(ui::label("-", 18.0, TEXT), Pickable::IGNORE)],
+                                            ))
+                                            .observe(turn_dial(dial, -1.0));
+                                        controls.spawn((
+                                            ui::label("", 17.0, TEXT),
+                                            DialText(dial),
+                                            TextLayout::justify(Justify::Center),
+                                            Node {
+                                                width: px(70),
+                                                ..default()
+                                            },
+                                        ));
+                                        controls
+                                            .spawn((
+                                                key_button(34),
+                                                children![(ui::label("+", 18.0, TEXT), Pickable::IGNORE)],
+                                            ))
+                                            .observe(turn_dial(dial, 1.0));
+                                    });
+                                });
+                            }
+                        });
+
+                        cards.spawn(ui::card()).with_children(|display| {
+                            display.spawn(ui::section("Display"));
+                            display.spawn(row()).with_children(|row| {
+                                row.spawn(ui::label("Window", 17.0, DIM));
+                                row.spawn((
+                                    key_button(230),
+                                    children![(ui::label("", 16.0, TEXT), Pickable::IGNORE, DisplayText)],
+                                ))
+                                .observe(|_: On<Activate>, mut settings: ResMut<Settings>| {
+                                    settings.fullscreen = !settings.fullscreen;
+                                });
+                            });
+                            display.spawn(ui::label("Alt + Enter switches at any time.", 14.0, DIM));
+                        });
+                    });
+
+                panel.spawn(ui::card()).with_children(|card| {
+                    card.spawn(ui::spread_row()).with_children(|heading| {
+                        heading.spawn(ui::section("Controls"));
+                        heading.spawn(ui::label(
+                            "Click a control, then press the key or mouse button for it.",
+                            14.0,
+                            DIM,
+                        ));
+                    });
+                    card.spawn(Node {
                         column_gap: px(28),
                         ..default()
                     })
                     .with_children(|columns| {
-                        for half in Action::ALL.chunks(Action::ALL.len().div_ceil(3)) {
-                            columns.spawn(column()).with_children(|binds| {
-                                for action in half.iter().copied() {
-                                    binds
-                                        .spawn(Node {
-                                            width: px(340),
-                                            ..row()
-                                        })
-                                        .with_children(|row| {
-                                            row.spawn(ui::label(action.label(), 18.0, DIM));
-                                            row.spawn((
-                                                key_button(140),
-                                                children![(ui::label("", 16.0, TEXT), Pickable::IGNORE, BindText(action))],
-                                            ))
-                                            .observe(
-                                                move |_: On<Activate>, mut menu: ResMut<SettingsMenu>| {
-                                                    menu.capturing = Some(Capture {
-                                                        action,
-                                                        armed: false,
-                                                    });
-                                                },
-                                            );
-                                        });
-                                }
-                            });
+                        for third in Action::ALL.chunks(Action::ALL.len().div_ceil(3)) {
+                            columns
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(6),
+                                    ..default()
+                                })
+                                .with_children(|binds| {
+                                    for action in third.iter().copied() {
+                                        binds
+                                            .spawn(Node {
+                                                width: px(320),
+                                                ..row()
+                                            })
+                                            .with_children(|row| {
+                                                row.spawn(ui::label(action.label(), 17.0, DIM));
+                                                row.spawn((
+                                                    key_button(140),
+                                                    children![(
+                                                        ui::label("", 16.0, TEXT),
+                                                        Pickable::IGNORE,
+                                                        BindText(action)
+                                                    )],
+                                                ))
+                                                .observe(
+                                                    move |_: On<Activate>, mut menu: ResMut<SettingsMenu>| {
+                                                        menu.capturing = Some(Capture {
+                                                            action,
+                                                            armed: false,
+                                                        });
+                                                    },
+                                                );
+                                            });
+                                    }
+                                });
                         }
                     });
+                });
 
                 panel.spawn(ui::button_row()).with_children(|buttons| {
                     buttons
                         .spawn(ui::button("Reset to defaults"))
                         .observe(|_: On<Activate>, mut settings: ResMut<Settings>| settings.reset_controls());
                     buttons
-                        .spawn(ui::button("Done"))
+                        .spawn(ui::primary_button("Done"))
                         .observe(|_: On<Activate>, mut menu: ResMut<SettingsMenu>| menu.open = false);
                 });
             });
@@ -689,7 +759,12 @@ fn update_panel(
     menu: Res<SettingsMenu>,
     mut dials: Query<(&DialText, &mut Text), Without<BindText>>,
     mut binds: Query<(&BindText, &mut Text, &mut TextColor), Without<DialText>>,
+    mut display: Query<&mut Text, (With<DisplayText>, Without<DialText>, Without<BindText>)>,
 ) {
+    for mut text in &mut display {
+        let shown = if settings.fullscreen { "Borderless fullscreen" } else { "Windowed" };
+        ui::set_text(&mut text, shown.to_string());
+    }
     for (dial, mut text) in &mut dials {
         ui::set_text(&mut text, settings.dial_text(dial.0));
     }
@@ -706,6 +781,23 @@ fn update_panel(
         if color.0 != wanted {
             color.0 = wanted;
         }
+    }
+}
+
+/// Alt + Enter switches between a window and full screen, wherever you are.
+fn fullscreen_key(keys: Res<ButtonInput<KeyCode>>, menu: Res<SettingsMenu>, mut settings: ResMut<Settings>) {
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    // Not while a binding waits for a key: that key press is for the binding.
+    if alt && keys.just_pressed(KeyCode::Enter) && menu.capturing.is_none() {
+        settings.fullscreen = !settings.fullscreen;
+        settings.save();
+    }
+}
+
+fn apply_display(settings: Res<Settings>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    let wanted = settings.window_mode();
+    if window.mode != wanted {
+        window.mode = wanted;
     }
 }
 
@@ -729,6 +821,7 @@ mod tests {
             sensitivity: 3.4,
             fov: 90.0,
             volume: 0.35,
+            fullscreen: true,
             primary: 3,
             secondary: 1,
             ..default()

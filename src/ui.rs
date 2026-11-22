@@ -1,7 +1,11 @@
 //! All the 2D interface: main menu, lobby, in-game HUD, scoreboard and pause menu.
 
 use bevy::{
-    input_focus::tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
+    clipboard::Clipboard,
+    input_focus::{
+        InputFocus,
+        tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
+    },
     picking::hover::Hovered,
     prelude::*,
     text::{EditableText, TextCursorStyle},
@@ -13,24 +17,45 @@ use crate::{
     AppState, LaunchArgs,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
     map::MAP_NAMES,
-    weapons::{KNIFE, weapon},
     net::{self, Connection, MenuStatus, Session},
     player::{Controls, DASH_COOLDOWN, LocalPlayer},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
-    world::GameMap,
+    weapons::{KNIFE, weapon},
+    world::{GameMap, player_color},
 };
 
-const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.88);
+const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
+const PANEL_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
+/// A box inside a panel, a shade lighter than it.
+const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
 pub const BUTTON: Color = Color::srgb(0.16, 0.18, 0.24);
 const BUTTON_HOVER: Color = Color::srgb(0.25, 0.29, 0.40);
 const BUTTON_PRESS: Color = Color::srgb(0.95, 0.55, 0.15);
+const BUTTON_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
+/// The one button on a screen that moves things along.
+const PRIMARY: Color = Color::srgb(0.93, 0.53, 0.13);
+const PRIMARY_HOVER: Color = Color::srgb(1.0, 0.66, 0.28);
+const PRIMARY_PRESS: Color = Color::srgb(1.0, 0.80, 0.50);
+/// Text on a primary button.
+const ON_PRIMARY: Color = Color::srgb(0.09, 0.07, 0.05);
+const DANGER_HOVER: Color = Color::srgb(0.62, 0.20, 0.18);
 const FIELD: Color = Color::srgb(0.10, 0.11, 0.15);
+const FIELD_EDGE: Color = Color::srgb(0.3, 0.33, 0.42);
 pub const TEXT: Color = Color::srgb(0.92, 0.93, 0.96);
 pub const DIM: Color = Color::srgb(0.60, 0.63, 0.70);
 pub const ACCENT: Color = Color::srgb(1.0, 0.62, 0.2);
 const DANGER: Color = Color::srgb(1.0, 0.35, 0.3);
+const GOOD: Color = Color::srgb(0.38, 0.86, 0.50);
+/// Behind the HUD's panels: see-through, so the game shows past them.
+const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
+const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
+/// The empty part of a bar.
+const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
+const TEAM_COLORS: [Color; 2] = [Color::srgb(1.0, 0.42, 0.38), Color::srgb(0.42, 0.66, 1.0)];
+/// At or below this, health is shown in red and the bar pulses.
+const LOW_HEALTH: i32 = 30;
 
 pub struct UiPlugin;
 
@@ -59,10 +84,14 @@ impl Plugin for UiPlugin {
                 Update,
                 (
                     style_buttons,
+                    style_fields,
                     update_menu_status.run_if(in_state(AppState::Menu)),
+                    update_connecting.run_if(in_state(AppState::Connecting)),
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
-                    (update_hud, update_overlays).run_if(in_state(AppState::Playing)),
+                    update_rosters,
+                    (update_hud, update_hud_shapes, update_overlays, update_key_hints)
+                        .run_if(in_state(AppState::Playing)),
                 ),
             );
     }
@@ -98,62 +127,113 @@ pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     )
 }
 
-pub fn button(text: &str) -> impl Bundle {
+/// The small dim capitals over a group of controls.
+pub fn section(text: &str) -> impl Bundle {
+    label(text.to_uppercase(), 13.0, DIM)
+}
+
+/// How a button is coloured.
+#[derive(Component, Clone, Copy, PartialEq, Default)]
+pub enum ButtonKind {
+    #[default]
+    Normal,
+    /// The main thing to do on a screen: filled with the accent colour.
+    Primary,
+    /// Leaving and quitting: turns red under the mouse.
+    Danger,
+}
+
+impl ButtonKind {
+    /// (at rest, under the mouse, held down)
+    fn colors(self) -> [Color; 3] {
+        match self {
+            ButtonKind::Normal => [BUTTON, BUTTON_HOVER, BUTTON_PRESS],
+            ButtonKind::Primary => [PRIMARY, PRIMARY_HOVER, PRIMARY_PRESS],
+            ButtonKind::Danger => [BUTTON, DANGER_HOVER, DANGER],
+        }
+    }
+}
+
+/// The box of a button, without its text.
+fn button_box(kind: ButtonKind, small: bool) -> impl Bundle {
+    let (across, down) = if small { (10, 4) } else { (18, 9) };
     (
         Button,
+        kind,
         Hovered::default(),
         Node {
-            padding: UiRect::axes(px(18), px(9)),
+            padding: UiRect::axes(px(across), px(down)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
+            border: UiRect::all(px(1)),
             border_radius: BorderRadius::all(px(6)),
             ..default()
         },
-        BackgroundColor(BUTTON),
-        children![(label(text, 20.0, TEXT), Pickable::IGNORE)],
+        BackgroundColor(kind.colors()[0]),
+        BorderColor::all(BUTTON_EDGE),
     )
 }
 
-fn text_field(field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
+fn button_of(text: &str, kind: ButtonKind, small: bool) -> impl Bundle {
+    let color = if kind == ButtonKind::Primary { ON_PRIMARY } else { TEXT };
+    let size = if small { 15.0 } else { 18.0 };
     (
-        field,
-        TextInput,
-        EditableText {
-            visible_width: Some(22.0),
-            max_characters: Some(max_chars),
-            ..EditableText::new(initial)
-        },
-        TextLayout::no_wrap(),
-        TextFont {
-            font_size: FontSize::Px(20.0),
-            ..default()
-        },
-        TextColor(TEXT),
-        TextCursorStyle::default(),
-        TabIndex(tab),
-        Node {
-            border: UiRect::all(px(2)),
-            padding: UiRect::axes(px(8), px(5)),
-            border_radius: BorderRadius::all(px(4)),
-            ..default()
-        },
-        BorderColor::all(Color::srgb(0.3, 0.33, 0.42)),
-        BackgroundColor(FIELD),
+        button_box(kind, small),
+        children![(label(text, size, color), Pickable::IGNORE)],
     )
 }
 
-fn field_row(caption: &str, field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
+pub fn button(text: &str) -> impl Bundle {
+    button_of(text, ButtonKind::Normal, false)
+}
+
+pub fn primary_button(text: &str) -> impl Bundle {
+    button_of(text, ButtonKind::Primary, false)
+}
+
+fn danger_button(text: &str) -> impl Bundle {
+    button_of(text, ButtonKind::Danger, false)
+}
+
+fn small_button(text: &str) -> impl Bundle {
+    button_of(text, ButtonKind::Normal, true)
+}
+
+/// A caption with a one-line text field under it.
+fn field(caption: &str, field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
     (
         Node {
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::SpaceBetween,
-            column_gap: px(16),
-            width: percent(100),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(5),
             ..default()
         },
         children![
-            label(caption, 18.0, DIM),
-            text_field(field, initial, max_chars, tab)
+            section(caption),
+            (
+                field,
+                TextInput,
+                EditableText {
+                    visible_width: Some(19.0),
+                    max_characters: Some(max_chars),
+                    ..EditableText::new(initial)
+                },
+                TextLayout::no_wrap(),
+                TextFont {
+                    font_size: FontSize::Px(20.0),
+                    ..default()
+                },
+                TextColor(TEXT),
+                TextCursorStyle::default(),
+                TabIndex(tab),
+                Node {
+                    border: UiRect::all(px(2)),
+                    padding: UiRect::axes(px(8), px(5)),
+                    border_radius: BorderRadius::all(px(4)),
+                    ..default()
+                },
+                BorderColor::all(FIELD_EDGE),
+                BackgroundColor(FIELD),
+            )
         ],
     )
 }
@@ -178,32 +258,73 @@ pub fn panel() -> impl Bundle {
         Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            row_gap: px(12),
-            padding: UiRect::all(px(28)),
-            border_radius: BorderRadius::all(px(10)),
+            row_gap: px(14),
+            padding: UiRect::axes(px(30), px(26)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(12)),
             ..default()
         },
         BackgroundColor(PANEL),
+        BorderColor::all(PANEL_EDGE),
     )
+}
+
+/// A box inside a panel that groups a few controls under a `section` caption.
+pub fn card() -> impl Bundle {
+    (card_node(), BackgroundColor(CARD), BorderColor::all(HUD_EDGE))
+}
+
+pub fn card_node() -> Node {
+    Node {
+        flex_direction: FlexDirection::Column,
+        row_gap: px(10),
+        padding: UiRect::all(px(16)),
+        border: UiRect::all(px(1)),
+        border_radius: BorderRadius::all(px(8)),
+        ..default()
+    }
 }
 
 pub fn button_row() -> Node {
     Node {
         column_gap: px(12),
-        margin: UiRect::top(px(8)),
+        align_items: AlignItems::Center,
         ..default()
     }
 }
 
-fn style_buttons(mut buttons: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<Button>>) {
-    for (hovered, pressed, mut background) in &mut buttons {
+/// A row with its two ends pushed apart: a caption and what it is about.
+pub fn spread_row() -> Node {
+    Node {
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::SpaceBetween,
+        column_gap: px(12),
+        ..default()
+    }
+}
+
+fn style_buttons(
+    mut buttons: Query<(&Hovered, Has<Pressed>, Option<&ButtonKind>, &mut BackgroundColor), With<Button>>,
+) {
+    for (hovered, pressed, kind, mut background) in &mut buttons {
+        let [rest, hover, press] = kind.copied().unwrap_or_default().colors();
         let color = match (hovered.get(), pressed) {
-            (_, true) => BUTTON_PRESS,
-            (true, false) => BUTTON_HOVER,
-            (false, false) => BUTTON,
+            (_, true) => press,
+            (true, false) => hover,
+            (false, false) => rest,
         };
         if background.0 != color {
             background.0 = color;
+        }
+    }
+}
+
+/// The text field being typed into gets a bright edge.
+fn style_fields(focus: Res<InputFocus>, mut fields: Query<(Entity, &mut BorderColor), With<Field>>) {
+    for (entity, mut border) in &mut fields {
+        let wanted = if focus.get() == Some(entity) { ACCENT } else { FIELD_EDGE };
+        if border.top != wanted {
+            *border = BorderColor::all(wanted);
         }
     }
 }
@@ -226,48 +347,112 @@ fn set_shown(node: &mut Mut<Node>, shown: bool) {
 #[derive(Component)]
 struct MenuStatusText;
 
+/// One half of the menu: what it does, the field it needs and the button.
+fn menu_card(title: &str, hint: &str, input: impl Bundle, action: impl Bundle) -> impl Bundle {
+    (
+        card(),
+        children![
+            label(title, 20.0, TEXT),
+            label(hint, 14.0, DIM),
+            input,
+            (
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    margin: UiRect::top(px(4)),
+                    ..default()
+                },
+                children![action],
+            ),
+        ],
+    )
+}
+
 fn spawn_menu(mut commands: Commands, prefs: Res<MenuPrefs>) {
     commands.spawn((
         screen(AppState::Menu),
         TabGroup::new(0),
-        children![(
-            panel(),
-            children![
-                label("SHITSHOOTER", 54.0, ACCENT),
-                label("fast free-for-all, hosted by you", 18.0, DIM),
-                (
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: px(8),
-                        margin: UiRect::vertical(px(10)),
-                        ..default()
-                    },
-                    children![
-                        field_row("Name", Field::Name, &prefs.name, 16, 0),
-                        field_row("Join address", Field::Address, &prefs.address, 64, 1),
-                        field_row("Host port", Field::Port, &prefs.port, 5, 2),
-                        field_row("Password (optional)", Field::Password, &prefs.password, 32, 3),
-                    ],
-                ),
-                (
-                    button_row(),
-                    children![
-                        (button("Host lobby"), observe(on_host)),
-                        (button("Join lobby"), observe(on_join)),
-                        (button("Settings"), observe(on_open_settings)),
-                        (button("Quit"), observe(on_quit)),
-                    ],
-                ),
-                (label("", 16.0, DANGER), MenuStatusText),
-            ],
-        )],
+        children![
+            (
+                panel(),
+                children![
+                    label("SHITSHOOTER", 56.0, ACCENT),
+                    label("fast arena shooter, hosted by you", 17.0, DIM),
+                    (
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(14),
+                            margin: UiRect::top(px(8)),
+                            ..default()
+                        },
+                        children![
+                            (
+                                Node {
+                                    flex_direction: FlexDirection::Row,
+                                    justify_content: JustifyContent::SpaceBetween,
+                                    ..card_node()
+                                },
+                                BackgroundColor(CARD),
+                                BorderColor::all(HUD_EDGE),
+                                children![
+                                    field("Your name", Field::Name, &prefs.name, 16, 0),
+                                    field("Lobby password (optional)", Field::Password, &prefs.password, 32, 1),
+                                ],
+                            ),
+                            (
+                                Node {
+                                    column_gap: px(14),
+                                    ..default()
+                                },
+                                children![
+                                    menu_card(
+                                        "Host",
+                                        "Start a lobby on this PC.",
+                                        field("UDP port", Field::Port, &prefs.port, 5, 2),
+                                        (primary_button("Host lobby"), observe(on_host)),
+                                    ),
+                                    menu_card(
+                                        "Join",
+                                        "Connect to a friend's lobby.",
+                                        field("Address", Field::Address, &prefs.address, 64, 3),
+                                        (primary_button("Join lobby"), observe(on_join)),
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    (label("", 16.0, DANGER), MenuStatusText),
+                    (
+                        button_row(),
+                        children![
+                            (button("Settings"), observe(on_open_settings)),
+                            (danger_button("Quit"), observe(on_quit)),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(16),
+                    bottom: px(12),
+                    ..default()
+                },
+                children![label(format!("version {}", crate::VERSION), 13.0, DIM)],
+            ),
+        ],
     ));
 }
 
-fn update_menu_status(status: Res<MenuStatus>, mut text: Single<&mut Text, With<MenuStatusText>>) {
+/// Shows the error, if there is one; takes up no room otherwise.
+fn update_menu_status(
+    status: Res<MenuStatus>,
+    mut text: Single<(&mut Text, &mut Node), With<MenuStatusText>>,
+) {
+    let (text, node) = &mut *text;
     if text.0 != status.0 {
         text.0 = status.0.clone();
     }
+    set_shown(node, !status.0.is_empty());
 }
 
 /// Takes what is in the text fields, and remembers it for the next time the
@@ -385,26 +570,203 @@ fn on_leave(
 
 // ---------------------------------------------------------------- connecting
 
+/// The dots after "Connecting", which come and go to show it is still trying.
+#[derive(Component)]
+struct ConnectingDots;
+
 fn spawn_connecting(mut commands: Commands, session: Res<Session>) {
     commands.spawn((
         screen(AppState::Connecting),
         children![(
             panel(),
             children![
-                label(format!("Connecting to {}...", session.server_label), 24.0, TEXT),
-                (button("Cancel"), observe(on_leave)),
+                (
+                    Node::default(),
+                    children![
+                        label("Connecting", 26.0, TEXT),
+                        // Three characters wide whatever it shows, so the line does not shift.
+                        (label("", 26.0, ACCENT), ConnectingDots, Node { width: px(50), ..default() }),
+                    ],
+                ),
+                label(session.server_label.clone(), 17.0, DIM),
+                (danger_button("Cancel"), observe(on_leave)),
             ],
         )],
     ));
 }
 
+fn update_connecting(time: Res<Time>, mut dots: Single<&mut Text, With<ConnectingDots>>) {
+    let count = (time.elapsed_secs() * 2.5) as usize % 4;
+    set_text(&mut dots, ".".repeat(count));
+}
+
+// ---------------------------------------------------------------- player list
+
+/// A table of the players and their scores, kept up to date by
+/// `update_rosters`. Used in the lobby and for the in-game scoreboard.
+#[derive(Component, Default)]
+struct RosterList {
+    /// What the rows were last built from.
+    shown: Option<RosterKey>,
+}
+
+/// Everything the player list shows; the rows are rebuilt when it changes.
+#[derive(Clone, PartialEq)]
+struct RosterKey {
+    roster: Vec<PlayerInfo>,
+    my_id: PlayerId,
+    leader: PlayerId,
+    team_mode: bool,
+    team_scores: [u32; 2],
+}
+
+const ROSTER_WIDTH: f32 = 430.0;
+const STAT_WIDTH: f32 = 64.0;
+
+fn roster_list() -> impl Bundle {
+    (
+        RosterList::default(),
+        Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: px(12),
+            min_width: px(ROSTER_WIDTH),
+            ..default()
+        },
+    )
+}
+
+/// A number in one of the two columns on the right of the player list.
+fn roster_stat(text: String, size: f32, color: Color) -> impl Bundle {
+    (
+        label(text, size, color),
+        TextLayout::justify(Justify::Right),
+        Node {
+            width: px(STAT_WIDTH),
+            ..default()
+        },
+    )
+}
+
+fn roster_row_node() -> Node {
+    Node {
+        align_items: AlignItems::Center,
+        column_gap: px(10),
+        padding: UiRect::axes(px(10), px(4)),
+        border: UiRect::all(px(1)),
+        border_radius: BorderRadius::all(px(5)),
+        ..default()
+    }
+}
+
+/// The line over a group of players: a title, and the names of the columns.
+fn roster_heading(title: String, color: Color) -> impl Bundle {
+    (
+        roster_row_node(),
+        children![
+            (label(title, 13.0, color), Node { flex_grow: 1.0, ..default() }),
+            roster_stat("KILLS".into(), 13.0, DIM),
+            roster_stat("DEATHS".into(), 13.0, DIM),
+        ],
+    )
+}
+
+fn roster_row(player: &PlayerInfo, key: &RosterKey) -> impl Bundle {
+    let me = player.id == key.my_id;
+    let (name, tag) = match player.name.strip_prefix("[bot] ") {
+        Some(name) if player.is_bot => (name, "BOT"),
+        _ if player.id == key.leader => (player.name.as_str(), "HOST"),
+        _ => (player.name.as_str(), ""),
+    };
+    let swatch = if key.team_mode {
+        TEAM_COLORS[player.team as usize & 1]
+    } else {
+        player_color(player.color)
+    };
+    (
+        roster_row_node(),
+        // Your own line stands out.
+        BackgroundColor(if me { Color::srgba(1.0, 1.0, 1.0, 0.07) } else { Color::NONE }),
+        BorderColor::all(if me { ACCENT.with_alpha(0.55) } else { Color::NONE }),
+        children![
+            (
+                Node {
+                    width: px(10),
+                    height: px(10),
+                    border_radius: BorderRadius::all(px(5)),
+                    ..default()
+                },
+                BackgroundColor(swatch),
+            ),
+            (label(name, 18.0, TEXT), TextLayout::no_wrap()),
+            (
+                label(tag, 12.0, if tag == "HOST" { ACCENT } else { DIM }),
+                Node { flex_grow: 1.0, ..default() },
+            ),
+            roster_stat(player.kills.to_string(), 18.0, TEXT),
+            roster_stat(player.deaths.to_string(), 18.0, DIM),
+        ],
+    )
+}
+
+/// Rebuilds the rows of every player list whose players or scores changed.
+/// Best score first; one group per team in the team modes.
+fn update_rosters(mut commands: Commands, session: Res<Session>, mut lists: Query<(Entity, &mut RosterList)>) {
+    if lists.is_empty() {
+        return;
+    }
+    let mut roster = session.roster.clone();
+    roster.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+    let key = RosterKey {
+        roster,
+        my_id: session.my_id,
+        leader: session.leader,
+        team_mode: session.team_mode(),
+        team_scores: session.team_scores,
+    };
+    for (entity, mut list) in &mut lists {
+        if list.shown.as_ref() == Some(&key) {
+            continue;
+        }
+        list.shown = Some(key.clone());
+        let column = || Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: px(2),
+            ..default()
+        };
+        commands.entity(entity).despawn_children().with_children(|groups| {
+            if !key.team_mode {
+                groups.spawn(column()).with_children(|rows| {
+                    rows.spawn(roster_heading("PLAYER".into(), DIM));
+                    for player in &key.roster {
+                        rows.spawn(roster_row(player, &key));
+                    }
+                });
+                return;
+            }
+            for team in 0..2usize {
+                groups.spawn(column()).with_children(|rows| {
+                    let title = format!("{} TEAM  -  {}", TEAM_NAMES[team].to_uppercase(), key.team_scores[team]);
+                    rows.spawn(roster_heading(title, TEAM_COLORS[team]));
+                    for player in key.roster.iter().filter(|player| player.team as usize & 1 == team) {
+                        rows.spawn(roster_row(player, &key));
+                    }
+                });
+            }
+        });
+    }
+}
+
 // ---------------------------------------------------------------- lobby
 
-#[derive(Component)]
-struct LobbyPlayers;
-
-#[derive(Component)]
-struct LobbyInfo;
+/// The pieces of text in the lobby that change.
+#[derive(Component, Clone, Copy)]
+enum LobbyText {
+    Mode,
+    Map,
+    Bots,
+    /// How the last match ended, and who we are waiting for.
+    Info,
+}
 
 /// Shown only to the lobby leader.
 #[derive(Component)]
@@ -414,6 +776,10 @@ struct LeaderOnly;
 #[derive(Component)]
 struct TeamModeOnly;
 
+/// The text of the button that copies the lobby's address.
+#[derive(Component)]
+struct CopyLabel;
+
 /// The text of a button that shows, and changes, the gun in a slot.
 #[derive(Component)]
 struct LoadoutText(usize);
@@ -421,17 +787,8 @@ struct LoadoutText(usize);
 /// A button that puts the next gun in a slot (0 = primary, 1 = secondary).
 fn loadout_button(slot: usize) -> impl Bundle {
     (
-        Button,
-        Hovered::default(),
-        Node {
-            padding: UiRect::axes(px(18), px(9)),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            border_radius: BorderRadius::all(px(6)),
-            ..default()
-        },
-        BackgroundColor(BUTTON),
-        children![(label("", 20.0, TEXT), Pickable::IGNORE, LoadoutText(slot))],
+        button_box(ButtonKind::Normal, false),
+        children![(label("", 18.0, TEXT), Pickable::IGNORE, LoadoutText(slot))],
         observe(move |_: On<Activate>, mut settings: ResMut<Settings>| {
             settings.cycle_gun(slot);
             settings.save();
@@ -450,53 +807,152 @@ fn update_loadout_buttons(settings: Res<Settings>, mut texts: Query<(&LoadoutTex
     }
 }
 
+/// One line of the match settings: what it is, its value, and the buttons
+/// with which the leader changes it.
+fn match_row(caption: &str, value: LobbyText, buttons: impl Bundle) -> impl Bundle {
+    (
+        Node {
+            min_height: px(30),
+            ..spread_row()
+        },
+        children![
+            label(caption, 16.0, DIM),
+            (
+                Node {
+                    align_items: AlignItems::Center,
+                    column_gap: px(8),
+                    ..default()
+                },
+                children![(label("", 16.0, TEXT), value), buttons],
+            ),
+        ],
+    )
+}
+
+fn leader_button(text: &str, msg: ClientMsg) -> impl Bundle {
+    (small_button(text), LeaderOnly, observe(send_on_click(msg)))
+}
+
 fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
-    let share = match &session.share_address {
-        Some(address) => format!(
-            "Friends on your network join with:  {address}\nOver the internet: forward this UDP port on your router and share your public IP."
-        ),
-        None => format!("Connected to {}", session.server_label),
-    };
-    commands.spawn((
-        screen(AppState::Lobby),
-        children![(
-            panel(),
-            children![
-                label("LOBBY", 40.0, ACCENT),
-                label(share, 16.0, DIM),
-                (
-                    label("", 20.0, TEXT),
-                    LobbyPlayers,
-                    TextLayout::no_wrap(),
-                    Node {
-                        margin: UiRect::vertical(px(10)),
-                        ..default()
-                    },
-                ),
-                (label("", 18.0, ACCENT), LobbyInfo),
-                (
-                    button_row(),
-                    children![
-                        (button("Start match"), LeaderOnly, observe(send_on_click(ClientMsg::StartMatch))),
-                        (button("Change mode"), LeaderOnly, observe(send_on_click(ClientMsg::NextMode))),
-                        (button("Change map"), LeaderOnly, observe(send_on_click(ClientMsg::NextMap))),
-                        (button("Add bot"), LeaderOnly, observe(send_on_click(ClientMsg::AddBot))),
-                        (button("Remove bots"), LeaderOnly, observe(send_on_click(ClientMsg::RemoveBots))),
-                    ],
-                ),
-                (
-                    button_row(),
-                    children![
-                        (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
-                        loadout_button(0),
-                        loadout_button(1),
-                        (button("Settings"), observe(on_open_settings)),
-                        (button("Leave"), observe(on_leave)),
-                    ],
-                ),
-            ],
-        )],
-    ));
+    let share = session.share_address.clone();
+    let connected = format!("Connected to {}", session.server_label);
+    commands.spawn(screen(AppState::Lobby)).with_children(|screen| {
+        screen.spawn(panel()).with_children(|panel| {
+            panel.spawn(label("LOBBY", 40.0, ACCENT));
+
+            match share {
+                // Hosting: how the others get in.
+                Some(address) => {
+                    panel.spawn((
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: px(6),
+                            ..default()
+                        },
+                        children![
+                            (
+                                Node {
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(10),
+                                    ..default()
+                                },
+                                children![
+                                    label("Friends on your network join with", 16.0, DIM),
+                                    label(address.clone(), 20.0, TEXT),
+                                    (
+                                        button_box(ButtonKind::Normal, true),
+                                        children![(label("Copy", 15.0, TEXT), Pickable::IGNORE, CopyLabel)],
+                                        observe(
+                                            move |_: On<Activate>,
+                                                  mut clipboard: ResMut<Clipboard>,
+                                                  mut text: Single<&mut Text, With<CopyLabel>>| {
+                                                let done = clipboard.set_text(address.as_str()).is_ok();
+                                                text.0 = if done { "Copied" } else { "Failed" }.to_string();
+                                            },
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            label(
+                                "Over the internet: forward this UDP port on your router and share your public IP.",
+                                14.0,
+                                DIM,
+                            ),
+                        ],
+                    ));
+                }
+                None => {
+                    panel.spawn(label(connected, 16.0, DIM));
+                }
+            }
+
+            panel.spawn((
+                Node {
+                    column_gap: px(14),
+                    ..default()
+                },
+                children![
+                    (card(), children![section("Players"), roster_list()]),
+                    (
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(14),
+                            width: px(350),
+                            ..default()
+                        },
+                        children![
+                            (
+                                card(),
+                                children![
+                                    section("Match"),
+                                    match_row("Mode", LobbyText::Mode, leader_button("Change", ClientMsg::NextMode)),
+                                    match_row("Map", LobbyText::Map, leader_button("Change", ClientMsg::NextMap)),
+                                    match_row(
+                                        "Bots",
+                                        LobbyText::Bots,
+                                        (
+                                            Node {
+                                                column_gap: px(6),
+                                                ..default()
+                                            },
+                                            children![
+                                                leader_button("Add", ClientMsg::AddBot),
+                                                leader_button("Clear", ClientMsg::RemoveBots),
+                                            ],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            (
+                                card(),
+                                children![
+                                    section("Loadout"),
+                                    loadout_button(0),
+                                    loadout_button(1),
+                                    (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ));
+
+            panel.spawn((
+                label("", 17.0, ACCENT),
+                LobbyText::Info,
+                TextLayout::justify(Justify::Center),
+            ));
+            panel.spawn((
+                button_row(),
+                children![
+                    (primary_button("Start match"), LeaderOnly, observe(send_on_click(ClientMsg::StartMatch))),
+                    (button("Settings"), observe(on_open_settings)),
+                    (danger_button("Leave"), observe(on_leave)),
+                ],
+            ));
+        });
+    });
 }
 
 /// An observer that sends `msg` to the server when its button is clicked.
@@ -511,66 +967,36 @@ fn send_on_click(msg: ClientMsg) -> impl Fn(On<Activate>, Option<ResMut<Connecti
 fn update_lobby(
     session: Res<Session>,
     map: Res<GameMap>,
-    mut players: Single<&mut Text, (With<LobbyPlayers>, Without<LobbyInfo>)>,
-    mut info: Single<&mut Text, (With<LobbyInfo>, Without<LobbyPlayers>)>,
+    mut texts: Query<(&LobbyText, &mut Text, &mut Node), (Without<LeaderOnly>, Without<TeamModeOnly>)>,
     mut leader_only: Query<&mut Node, (With<LeaderOnly>, Without<TeamModeOnly>)>,
     mut team_only: Query<&mut Node, (With<TeamModeOnly>, Without<LeaderOnly>)>,
 ) {
-    set_text(&mut players, scoreboard_text(&session));
-
-    let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
-    let mode_name = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
-    let mut lines = vec![format!("{mode_name}   -   map: {map_name}")];
+    for (kind, mut text, mut node) in &mut texts {
+        let value = match kind {
+            LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_string(),
+            LobbyText::Map => MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?").to_string(),
+            LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
+            LobbyText::Info => {
+                let mut lines = Vec::new();
+                if let Some(result) = &session.last_result {
+                    lines.push(result.clone());
+                }
+                if !session.is_leader() {
+                    lines.push(format!("Waiting for {} to start the match...", session.name_of(session.leader)));
+                }
+                // Takes up no room when there is nothing to say.
+                set_shown(&mut node, !lines.is_empty());
+                lines.join("\n")
+            }
+        };
+        set_text(&mut text, value);
+    }
     for mut node in &mut team_only {
         set_shown(&mut node, session.team_mode());
     }
-    if let Some(result) = &session.last_result {
-        lines.push(result.clone());
-    }
-    if !session.is_leader() {
-        lines.push(format!("Waiting for {} to start the match...", session.name_of(session.leader)));
-    }
-    set_text(&mut info, lines.join("\n"));
-
     for mut node in &mut leader_only {
         set_shown(&mut node, session.is_leader());
     }
-}
-
-/// Player table, best score first; one table per team in the team modes.
-/// Relies on the default font being monospace.
-fn scoreboard_text(session: &Session) -> String {
-    let mut players: Vec<&PlayerInfo> = session.roster.iter().collect();
-    players.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
-    let row = |player: &PlayerInfo| {
-        let marker = if player.id == session.my_id { ">" } else { " " };
-        let mut name = player.name.clone();
-        if player.id == session.leader {
-            name.push_str(" (host)");
-        }
-        format!("{marker} {:<22}{:>6}{:>8}\n", name, player.kills, player.deaths)
-    };
-    let heading = |title: &str| format!("  {title:<22}{:>6}{:>8}\n", "KILLS", "DEATHS");
-
-    if !session.team_mode() {
-        return heading("PLAYER") + &players.iter().map(|player| row(player)).collect::<String>();
-    }
-    let mut text = String::new();
-    for team in 0..2u8 {
-        if team == 1 {
-            text.push('\n');
-        }
-        let title = format!(
-            "{} TEAM  -  {}",
-            TEAM_NAMES[team as usize].to_uppercase(),
-            session.team_scores[team as usize]
-        );
-        text.push_str(&heading(&title));
-        for player in players.iter().filter(|player| player.team & 1 == team) {
-            text.push_str(&row(player));
-        }
-    }
-    text
 }
 
 // ---------------------------------------------------------------- in-game HUD
@@ -578,21 +1004,55 @@ fn scoreboard_text(session: &Session) -> String {
 /// The pieces of text on the HUD.
 #[derive(Component, Clone, Copy)]
 enum Hud {
-    /// Clock, score and ping along the top.
-    Top,
+    Clock,
+    /// The caption over one of the two scores beside the clock (0 = left).
+    ScoreLabel(usize),
+    Score(usize),
+    /// The line under the clock: score limit, team, hill.
+    Info,
+    Ping,
     Health,
     Speed,
-    Feed,
+    DashLabel,
+    /// One line of the kill feed.
+    Feed(usize),
     /// Death and respawn message.
     Center,
+    /// The name of the weapon in hand.
+    WeaponTitle,
     Ammo,
-    /// The three weapon slots.
-    Weapons,
+    /// The size of the magazine, after the ammo.
+    Magazine,
+    /// The key of one of the three weapon slots, and what is in it.
+    SlotKey(usize),
+    SlotName(usize),
+    GrenadeKey,
     /// "FRAGGED somebody".
     Kill,
     /// Streaks and revenge, under the kill line.
     Banner,
 }
+
+/// The part of a bar that grows and shrinks.
+#[derive(Component, Clone, Copy)]
+enum Bar {
+    Health,
+    /// Trails behind the health bar, showing what was just lost.
+    HealthLag,
+    Dash,
+    /// Rounds left in the magazine, or how far along the reload is.
+    Ammo,
+    /// One grenade, filling up as it recharges.
+    Grenade(usize),
+}
+
+/// The box around one of the three weapon slots; lit when it is in hand.
+#[derive(Component)]
+struct SlotChip(usize);
+
+/// The box around one line of the kill feed.
+#[derive(Component)]
+struct FeedRow(usize);
 
 /// The coloured shapes on the HUD.
 #[derive(Component, Clone, Copy)]
@@ -609,8 +1069,6 @@ struct ScoreboardPanel;
 struct ScoreboardText;
 #[derive(Component)]
 struct PausePanel;
-#[derive(Component)]
-struct PauseInfo;
 
 /// A HUD element pinned to part of the screen. Never blocks mouse clicks.
 fn hud_anchor(node: Node) -> impl Bundle {
@@ -648,6 +1106,122 @@ fn hud_line(top: f32) -> impl Bundle {
     })
 }
 
+/// HUD text, with a shadow so it reads against any background.
+fn hud_text(size: f32, color: Color, hud: Hud) -> impl Bundle {
+    (label("", size, color), hud_shadow(), hud)
+}
+
+fn hud_shadow() -> TextShadow {
+    TextShadow {
+        offset: Vec2::splat(1.5),
+        color: Color::srgba(0.0, 0.0, 0.0, 0.8),
+    }
+}
+
+/// A small fixed caption.
+fn caption(text: &str) -> impl Bundle {
+    (label(text, 13.0, DIM), hud_shadow())
+}
+
+/// A dark see-through box with a faint edge.
+fn hud_panel(node: Node) -> impl Bundle {
+    (
+        Node {
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(8)),
+            ..node
+        },
+        BackgroundColor(HUD_PANEL),
+        BorderColor::all(HUD_EDGE),
+    )
+}
+
+/// The empty part of a bar; give it `bar_fill` children.
+fn bar_track(width: Val, height: f32) -> impl Bundle {
+    (
+        Node {
+            width,
+            height: px(height),
+            border_radius: BorderRadius::all(px(height / 2.0)),
+            overflow: Overflow::clip(),
+            ..default()
+        },
+        BackgroundColor(TRACK),
+    )
+}
+
+fn bar_fill(bar: Bar, color: Color) -> impl Bundle {
+    (
+        bar,
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            top: px(0),
+            width: percent(0),
+            height: percent(100),
+            border_radius: BorderRadius::all(px(5)),
+            ..default()
+        },
+        BackgroundColor(color),
+    )
+}
+
+/// One of the two scores beside the clock, under its caption.
+fn score_block(side: usize) -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            min_width: px(96),
+            ..default()
+        },
+        children![
+            hud_text(12.0, DIM, Hud::ScoreLabel(side)),
+            hud_text(26.0, TEXT, Hud::Score(side)),
+        ],
+    )
+}
+
+fn chip_node() -> Node {
+    Node {
+        align_items: AlignItems::Center,
+        column_gap: px(6),
+        padding: UiRect::axes(px(8), px(4)),
+        border: UiRect::all(px(1)),
+        border_radius: BorderRadius::all(px(5)),
+        ..default()
+    }
+}
+
+/// A weapon slot: its key and what is in it.
+fn slot_chip(slot: usize) -> impl Bundle {
+    (
+        SlotChip(slot),
+        chip_node(),
+        BackgroundColor(Color::NONE),
+        BorderColor::all(Color::NONE),
+        children![
+            hud_text(12.0, DIM, Hud::SlotKey(slot)),
+            hud_text(14.0, DIM, Hud::SlotName(slot)),
+        ],
+    )
+}
+
+/// One line of the kill feed (it holds seven at most).
+fn feed_row(row: usize) -> impl Bundle {
+    (
+        FeedRow(row),
+        Node {
+            padding: UiRect::axes(px(10), px(3)),
+            border_radius: BorderRadius::all(px(5)),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(HUD_PANEL),
+        children![hud_text(16.0, TEXT, Hud::Feed(row))],
+    )
+}
+
 /// One tick of the hit marker: a short diagonal stroke `(dx, dy)` away from
 /// the middle of its 40 x 40 box.
 fn hit_tick(dx: f32, dy: f32) -> impl Bundle {
@@ -673,17 +1247,19 @@ fn hit_tick(dx: f32, dy: f32) -> impl Bundle {
 fn spawn_hud(mut commands: Commands) {
     commands.spawn((hud_layer(), Overlay::DamageFlash, BackgroundColor(Color::NONE)));
 
-    // Crosshair.
+    // Crosshair: a white dot with a dark rim, so it shows against anything.
     commands.spawn((
         hud_layer(),
         children![(
             Node {
-                width: px(6),
-                height: px(6),
-                border_radius: BorderRadius::all(px(3)),
+                width: px(8),
+                height: px(8),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(4)),
                 ..default()
             },
             BackgroundColor(Color::WHITE),
+            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.7)),
         )],
     ));
 
@@ -706,68 +1282,191 @@ fn spawn_hud(mut commands: Commands) {
     ));
 
     // Death / respawn message, a bit above the middle of the screen.
-    commands.spawn((hud_line(30.0), children![(label("", 30.0, DANGER), Hud::Center)]));
+    commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
 
     // Kill announcements, a bit below it.
     commands.spawn((
         hud_line(60.0),
+        children![hud_text(28.0, TEXT, Hud::Kill), hud_text(22.0, ACCENT, Hud::Banner)],
+    ));
+
+    // Top middle: the clock between the two scores, and a line of detail under it.
+    commands.spawn((
+        hud_anchor(Node {
+            width: percent(100),
+            top: px(12),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: px(6),
+            ..default()
+        }),
         children![
-            (label("", 28.0, TEXT), Hud::Kill),
-            (label("", 22.0, ACCENT), Hud::Banner),
+            (
+                hud_panel(Node {
+                    align_items: AlignItems::Center,
+                    column_gap: px(14),
+                    padding: UiRect::axes(px(14), px(6)),
+                    ..default()
+                }),
+                children![score_block(0), hud_text(32.0, TEXT, Hud::Clock), score_block(1)],
+            ),
+            hud_text(14.0, DIM, Hud::Info),
         ],
     ));
 
     commands.spawn((
         hud_anchor(Node {
-            width: percent(100),
-            top: px(12),
-            justify_content: JustifyContent::Center,
+            left: px(20),
+            top: px(14),
             ..default()
         }),
-        children![(label("", 22.0, TEXT), Hud::Top)],
+        children![hud_text(14.0, DIM, Hud::Ping)],
     ));
 
+    // Kill feed, top right.
     commands.spawn((
         hud_anchor(Node {
-            left: px(24),
-            bottom: px(18),
-            ..default()
-        }),
-        children![(label("", 44.0, TEXT), Hud::Health)],
-    ));
-
-    commands.spawn((
-        hud_anchor(Node {
-            width: percent(100),
-            bottom: px(22),
-            justify_content: JustifyContent::Center,
-            ..default()
-        }),
-        children![(label("", 20.0, TEXT), Hud::Speed)],
-    ));
-
-    commands.spawn((
-        hud_anchor(Node {
-            right: px(18),
-            top: px(52),
-            ..default()
-        }),
-        children![(label("", 18.0, TEXT), Hud::Feed, TextLayout::justify(Justify::Right))],
-    ));
-
-    commands.spawn((
-        hud_anchor(Node {
-            right: px(24),
-            bottom: px(18),
+            right: px(20),
+            top: px(14),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::End,
             row_gap: px(4),
             ..default()
         }),
         children![
-            (label("", 16.0, DIM), Hud::Weapons),
-            (label("", 32.0, TEXT), Hud::Ammo),
+            feed_row(0),
+            feed_row(1),
+            feed_row(2),
+            feed_row(3),
+            feed_row(4),
+            feed_row(5),
+            feed_row(6),
         ],
+    ));
+
+    // Health, bottom left.
+    commands.spawn((
+        hud_anchor(Node {
+            left: px(20),
+            bottom: px(18),
+            ..default()
+        }),
+        children![(
+            hud_panel(Node {
+                width: px(280),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6),
+                padding: UiRect::axes(px(14), px(10)),
+                ..default()
+            }),
+            children![
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        ..default()
+                    },
+                    children![hud_text(40.0, TEXT, Hud::Health), caption("HEALTH")],
+                ),
+                (
+                    bar_track(percent(100), 10.0),
+                    children![
+                        bar_fill(Bar::HealthLag, Color::srgba(1.0, 1.0, 1.0, 0.75)),
+                        bar_fill(Bar::Health, GOOD),
+                    ],
+                ),
+            ],
+        )],
+    ));
+
+    // Speed and dash, bottom middle.
+    commands.spawn((
+        hud_anchor(Node {
+            width: percent(100),
+            bottom: px(22),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: px(6),
+            ..default()
+        }),
+        children![
+            hud_text(20.0, TEXT, Hud::Speed),
+            (
+                Node {
+                    align_items: AlignItems::Center,
+                    column_gap: px(8),
+                    ..default()
+                },
+                children![
+                    hud_text(13.0, DIM, Hud::DashLabel),
+                    (bar_track(px(120), 6.0), children![bar_fill(Bar::Dash, ACCENT)]),
+                ],
+            ),
+        ],
+    ));
+
+    // Weapons and ammo, bottom right.
+    commands.spawn((
+        hud_anchor(Node {
+            right: px(20),
+            bottom: px(18),
+            ..default()
+        }),
+        children![(
+            hud_panel(Node {
+                min_width: px(280),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6),
+                padding: UiRect::axes(px(14), px(10)),
+                ..default()
+            }),
+            children![
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::End,
+                        column_gap: px(4),
+                        ..default()
+                    },
+                    children![
+                        slot_chip(0),
+                        slot_chip(1),
+                        slot_chip(2),
+                        (
+                            chip_node(),
+                            children![
+                                hud_text(12.0, DIM, Hud::GrenadeKey),
+                                (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(0), TEXT)]),
+                                (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(1), TEXT)]),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: px(16),
+                        ..default()
+                    },
+                    children![
+                        hud_text(13.0, DIM, Hud::WeaponTitle),
+                        (
+                            Node {
+                                align_items: AlignItems::Baseline,
+                                column_gap: px(8),
+                                ..default()
+                            },
+                            children![
+                                hud_text(40.0, TEXT, Hud::Ammo),
+                                hud_text(20.0, DIM, Hud::Magazine),
+                            ],
+                        ),
+                    ],
+                ),
+                (bar_track(percent(100), 6.0), children![bar_fill(Bar::Ammo, TEXT)]),
+            ],
+        )],
     ));
 
     commands.spawn((
@@ -775,45 +1474,150 @@ fn spawn_hud(mut commands: Commands) {
         ScoreboardPanel,
         children![(
             panel(),
-            children![(label("", 20.0, TEXT), ScoreboardText, TextLayout::no_wrap())]
+            children![(label("", 16.0, DIM), ScoreboardText), roster_list()],
         )],
     ));
 
     // Pause menu. Spawned last so it is on top; this one does take clicks.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            width: percent(100),
-            height: percent(100),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            display: Display::None,
-            ..default()
-        },
-        PausePanel,
-        GlobalZIndex(10),
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
-        DespawnOnExit(AppState::Playing),
-        children![(
-            panel(),
-            children![
-                label("PAUSED", 36.0, ACCENT),
-                (label("", 17.0, DIM), PauseInfo),
-                (button_row(), children![loadout_button(0), loadout_button(1)]),
-                label("A new loadout is handed out the next time you spawn.", 15.0, DIM),
-                (
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                height: percent(100),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            PausePanel,
+            GlobalZIndex(10),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+            DespawnOnExit(AppState::Playing),
+        ))
+        .with_children(|screen| {
+            screen.spawn(panel()).with_children(|panel| {
+                panel.spawn(label("PAUSED", 36.0, ACCENT));
+                panel.spawn((
                     button_row(),
                     children![
-                        (button("Resume"), observe(on_resume)),
+                        (primary_button("Resume"), observe(on_resume)),
                         (button("Settings"), observe(on_open_settings)),
                         (button("End match"), LeaderOnly, observe(send_on_click(ClientMsg::EndMatch))),
-                        (button("Leave"), observe(on_leave)),
+                        (danger_button("Leave"), observe(on_leave)),
                     ],
-                ),
-            ],
-        )],
-    ));
+                ));
+                panel
+                    .spawn(Node {
+                        column_gap: px(14),
+                        margin: UiRect::top(px(4)),
+                        ..default()
+                    })
+                    .with_children(|cards| {
+                        cards.spawn(card()).with_children(|card| {
+                            card.spawn(section("Controls"));
+                            for (actions, what) in KEY_HINTS {
+                                card.spawn(Node {
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(6),
+                                    ..default()
+                                })
+                                .with_children(|row| {
+                                    for action in actions.iter().copied() {
+                                        row.spawn(key_chip(action));
+                                    }
+                                    row.spawn((
+                                        label(*what, 15.0, DIM),
+                                        Node {
+                                            margin: UiRect::left(px(4)),
+                                            ..default()
+                                        },
+                                    ));
+                                });
+                            }
+                        });
+                        cards.spawn((
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(14),
+                                width: px(330),
+                                ..default()
+                            },
+                            children![
+                                (
+                                    card(),
+                                    children![
+                                        section("Loadout"),
+                                        loadout_button(0),
+                                        loadout_button(1),
+                                        label("Handed out the next time you spawn.", 14.0, DIM),
+                                    ],
+                                ),
+                                (
+                                    card(),
+                                    children![
+                                        section("Tips"),
+                                        label("Strafe and turn in the air to build speed.", 14.0, DIM),
+                                        label("Green pads launch you.", 14.0, DIM),
+                                        label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
+                                        label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
+                                    ],
+                                ),
+                            ],
+                        ));
+                    });
+            });
+        });
+}
+
+/// The controls listed in the pause menu: the actions whose keys are shown,
+/// and what they do.
+const KEY_HINTS: &[(&[Action], &str)] = &[
+    (&[Action::Forward, Action::Left, Action::Back, Action::Right], "Move"),
+    (&[Action::Jump], "Jump, and again in the air (hold: bunny hop)"),
+    (&[Action::Dash], "Dash"),
+    (&[Action::Crouch], "Crouch (while running: slide)"),
+    (&[Action::Fire], "Fire"),
+    (&[Action::Aim], "Aim down sights"),
+    (&[Action::Reload], "Reload"),
+    (&[Action::Grenade], "Grenade"),
+    (&[Action::Primary, Action::Secondary, Action::Knife], "Weapons"),
+    (&[Action::Scores], "Scoreboard"),
+];
+
+/// The name of the key an action is bound to, in a little box.
+#[derive(Component)]
+struct KeyHint(Action);
+
+fn key_chip(action: Action) -> impl Bundle {
+    (
+        Node {
+            min_width: px(28),
+            padding: UiRect::axes(px(7), px(2)),
+            justify_content: JustifyContent::Center,
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(4)),
+            ..default()
+        },
+        BackgroundColor(BUTTON),
+        BorderColor::all(BUTTON_EDGE),
+        children![(label("", 14.0, TEXT), KeyHint(action))],
+    )
+}
+
+/// Keeps the keys in the pause menu in step with the bindings.
+fn update_key_hints(
+    settings: Res<Settings>,
+    added: Query<(), Added<KeyHint>>,
+    mut hints: Query<(&KeyHint, &mut Text)>,
+) {
+    if !settings.is_changed() && added.is_empty() {
+        return;
+    }
+    for (hint, mut text) in &mut hints {
+        set_text(&mut text, settings.bind(hint.0).display());
+    }
 }
 
 fn on_resume(_: On<Activate>, mut controls: ResMut<Controls>) {
@@ -825,40 +1629,52 @@ fn format_clock(seconds: f32) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// The line along the top: clock, score and ping.
-fn top_line(session: &Session, ping: f64) -> String {
-    let clock = format_clock(session.time_left);
+/// What goes either side of the clock, and under it.
+struct TopBar {
+    labels: [String; 2],
+    scores: [u32; 2],
+    colors: [Color; 2],
+    info: String,
+}
+
+fn top_bar(session: &Session) -> TopBar {
     if !session.team_mode() {
         let my_kills = session
             .roster
             .iter()
             .find(|p| p.id == session.my_id)
             .map_or(0, |p| p.kills);
-        let lead = match session.roster.iter().max_by_key(|p| p.kills) {
-            Some(p) if p.kills > 0 => format!("{} leads with {}", p.name, p.kills),
+        let leader = session.roster.iter().max_by_key(|p| p.kills);
+        let lead = match leader {
+            Some(p) if p.kills > 0 => format!("{} leads", p.name),
             _ => "no kills yet".to_string(),
         };
-        return format!(
-            "{clock}   |   you {my_kills} / {}   |   {lead}   |   {ping:.0} ms",
-            session.score_limit
-        );
+        return TopBar {
+            labels: ["YOU".to_string(), "BEST".to_string()],
+            scores: [my_kills as u32, leader.map_or(0, |p| p.kills) as u32],
+            colors: [ACCENT, TEXT],
+            info: format!("first to {}   |   {lead}", session.score_limit),
+        };
     }
-    let [red, blue] = session.team_scores;
-    let mut line = format!(
-        "{clock}   |   RED {red}  :  {blue} BLUE   |   first to {}   |   you are {}",
+    let mut info = format!(
+        "first to {}   |   you are {}",
         session.score_limit,
         TEAM_NAMES[session.team_of(session.my_id) as usize].to_uppercase()
     );
     if session.mode == MODE_HILL {
-        line.push_str(match session.hill {
+        info.push_str(match session.hill {
             HILL_EMPTY => "   |   hill: empty",
             HILL_CONTESTED => "   |   hill: CONTESTED",
             held if held == HILL_HELD => "   |   hill: RED",
             _ => "   |   hill: BLUE",
         });
     }
-    line.push_str(&format!("   |   {ping:.0} ms"));
-    line
+    TopBar {
+        labels: TEAM_NAMES.map(|name| name.to_uppercase()),
+        scores: session.team_scores.map(|score| score as u32),
+        colors: TEAM_COLORS,
+        info,
+    }
 }
 
 fn update_hud(
@@ -872,34 +1688,46 @@ fn update_hud(
 ) {
     let gun = player.guns.get(player.slot);
     let stats = player.weapon();
+    let top = top_bar(&session);
+    let health = if player.alive { player.health.max(0) } else { 0 };
     // A notice fades out over its last half second.
     let notice = |notice: &Option<(String, f32)>, color: Color| match notice {
         Some((text, left)) => (text.clone(), color.with_alpha((left / 0.5).min(1.0))),
         None => (String::new(), color),
     };
+    let slot_actions = [Action::Primary, Action::Secondary, Action::Knife];
+    let slot_names = [
+        weapon(player.guns[0].weapon).name,
+        weapon(player.guns[1].weapon).name,
+        weapon(KNIFE).name,
+    ];
     for (hud, mut text, mut color) in &mut texts {
-        let (value, wanted) = match hud {
-            Hud::Top => (
-                top_line(&session, connection.as_ref().map_or(0.0, |c| c.ping_ms())),
-                TEXT,
+        let (value, wanted) = match *hud {
+            Hud::Clock => (
+                format_clock(session.time_left),
+                // The last half minute.
+                if session.time_left <= 30.0 { DANGER } else { TEXT },
+            ),
+            Hud::ScoreLabel(side) => (top.labels[side].clone(), top.colors[side].with_alpha(0.8)),
+            Hud::Score(side) => (top.scores[side].to_string(), top.colors[side]),
+            Hud::Info => (top.info.clone(), DIM),
+            Hud::Ping => (
+                format!("{:.0} ms", connection.as_ref().map_or(0.0, |c| c.ping_ms())),
+                DIM,
             ),
             Hud::Health => (
-                format!("+ {}", player.health.max(0)),
-                if player.health <= 30 { DANGER } else { TEXT },
+                health.to_string(),
+                if health <= LOW_HEALTH { DANGER } else { TEXT },
             ),
-            Hud::Speed => {
-                let dash = if player.dash_cooldown <= 0.0 {
-                    "DASH ready".to_string()
-                } else {
-                    let filled = (10.0 * (1.0 - player.dash_cooldown / DASH_COOLDOWN)) as usize;
-                    format!("DASH [{}{}]", "#".repeat(filled), "-".repeat(10 - filled.min(10)))
-                };
-                (format!("{:>5.1} m/s    {}", player.horizontal_speed(), dash), TEXT)
-            }
-            Hud::Feed => (
-                feed.0.iter().map(|(line, _)| line.as_str()).collect::<Vec<_>>().join("\n"),
-                TEXT,
+            Hud::Speed => (format!("{:.1} m/s", player.horizontal_speed()), TEXT),
+            Hud::DashLabel => (
+                "DASH".to_string(),
+                if player.dash_cooldown <= 0.0 { TEXT } else { DIM },
             ),
+            Hud::Feed(row) => match feed.0.get(row) {
+                Some((line, left)) => (line.clone(), TEXT.with_alpha((left / 0.5).min(1.0))),
+                None => (String::new(), TEXT),
+            },
             Hud::Center => {
                 let message = match (&player.killed_by, player.alive) {
                     (_, true) => String::new(),
@@ -908,38 +1736,34 @@ fn update_hud(
                 };
                 (message, DANGER)
             }
+            Hud::WeaponTitle => {
+                if gun.is_some() && player.reloading() {
+                    ("RELOADING".to_string(), ACCENT)
+                } else {
+                    (stats.name.to_uppercase(), DIM)
+                }
+            }
             Hud::Ammo => match gun {
-                Some(_) if player.reloading() => ("RELOADING".to_string(), ACCENT),
                 Some(gun) => (
-                    format!("{} / {}", gun.ammo, stats.magazine),
+                    gun.ammo.to_string(),
                     // Running low.
                     if gun.ammo * 4 <= stats.magazine { ACCENT } else { TEXT },
                 ),
                 None => (String::new(), TEXT),
             },
-            Hud::Weapons => {
-                let slots = [Action::Primary, Action::Secondary, Action::Knife];
-                let names = [
-                    weapon(player.guns[0].weapon).name,
-                    weapon(player.guns[1].weapon).name,
-                    weapon(KNIFE).name,
-                ];
-                let mut line = String::new();
-                for (slot, (action, name)) in slots.into_iter().zip(names).enumerate() {
-                    let key = settings.bind(action).display();
-                    line.push_str(&if slot == player.slot {
-                        format!("{key} [{}]   ", name.to_uppercase())
-                    } else {
-                        format!("{key} {name}   ")
-                    });
-                }
-                line.push_str(&format!(
-                    "|   {} grenades {}",
-                    settings.bind(Action::Grenade).display(),
-                    player.grenades.floor()
-                ));
-                (line, DIM)
-            }
+            Hud::Magazine => (
+                gun.map_or(String::new(), |_| format!("/ {}", stats.magazine)),
+                DIM,
+            ),
+            Hud::SlotKey(slot) => (
+                settings.bind(slot_actions[slot]).display().to_string(),
+                if slot == player.slot { ACCENT } else { DIM },
+            ),
+            Hud::SlotName(slot) => (
+                slot_names[slot].to_string(),
+                if slot == player.slot { TEXT } else { DIM },
+            ),
+            Hud::GrenadeKey => (settings.bind(Action::Grenade).display().to_string(), DIM),
             Hud::Kill => notice(&notices.kill, TEXT),
             Hud::Banner => notice(&notices.banner, ACCENT),
         };
@@ -950,10 +1774,88 @@ fn update_hud(
     }
 }
 
+/// The bars, and the boxes that light up or come and go.
+fn update_hud_shapes(
+    time: Res<Time>,
+    player: Res<LocalPlayer>,
+    feed: Res<KillFeed>,
+    mut health_lag: Local<f32>,
+    mut bars: Query<(&Bar, &mut Node, &mut BackgroundColor)>,
+    mut chips: Query<(&SlotChip, &mut BackgroundColor, &mut BorderColor), Without<Bar>>,
+    mut rows: Query<(&FeedRow, &mut Node, &mut BackgroundColor), (Without<Bar>, Without<SlotChip>)>,
+) {
+    let health = if player.alive { player.health.max(0) } else { 0 };
+    let health_part = health as f32 / MAX_HEALTH as f32;
+    // What was just lost drains away behind the bar; healing catches up at once.
+    *health_lag = (*health_lag - time.delta_secs() * 0.6).max(health_part);
+    let health_color = if health <= LOW_HEALTH {
+        // Pulses, to be hard to miss.
+        DANGER.with_alpha(0.75 + 0.25 * (time.elapsed_secs() * 9.0).sin())
+    } else if health <= MAX_HEALTH * 6 / 10 {
+        ACCENT
+    } else {
+        GOOD
+    };
+
+    let gun = player.guns.get(player.slot);
+    let stats = player.weapon();
+    let (ammo_part, ammo_color) = match gun {
+        Some(_) if player.reloading() => (1.0 - player.reload / stats.reload.max(0.01), ACCENT),
+        Some(gun) => (
+            gun.ammo as f32 / stats.magazine.max(1) as f32,
+            if gun.ammo * 4 <= stats.magazine { ACCENT } else { TEXT },
+        ),
+        None => (0.0, TEXT),
+    };
+    let dash_part = 1.0 - player.dash_cooldown / DASH_COOLDOWN;
+
+    for (bar, mut node, mut background) in &mut bars {
+        let (part, color) = match *bar {
+            Bar::Health => (health_part, health_color),
+            Bar::HealthLag => (*health_lag, Color::srgba(1.0, 1.0, 1.0, 0.75)),
+            Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
+            Bar::Ammo => (ammo_part, ammo_color),
+            Bar::Grenade(index) => {
+                let part = player.grenades - index as f32;
+                (part, if part >= 1.0 { TEXT } else { DIM })
+            }
+        };
+        let width = percent(part.clamp(0.0, 1.0) * 100.0);
+        if node.width != width {
+            node.width = width;
+        }
+        if background.0 != color {
+            background.0 = color;
+        }
+    }
+
+    for (chip, mut background, mut border) in &mut chips {
+        let (fill, edge) = if chip.0 == player.slot {
+            (Color::srgba(1.0, 1.0, 1.0, 0.10), ACCENT.with_alpha(0.7))
+        } else {
+            (Color::NONE, Color::NONE)
+        };
+        if background.0 != fill {
+            background.0 = fill;
+            *border = BorderColor::all(edge);
+        }
+    }
+
+    for (row, mut node, mut background) in &mut rows {
+        let left = feed.0.get(row.0).map(|(_, left)| *left);
+        set_shown(&mut node, left.is_some());
+        // Fades out with its text.
+        let color = HUD_PANEL.with_alpha(HUD_PANEL.alpha() * (left.unwrap_or(0.0) / 0.5).min(1.0));
+        if background.0 != color {
+            background.0 = color;
+        }
+    }
+}
+
 fn update_overlays(
     input: ActionInput,
-    settings: Res<Settings>,
     session: Res<Session>,
+    map: Res<GameMap>,
     player: Res<LocalPlayer>,
     controls: Res<Controls>,
     mut overlays: Query<(&Overlay, &mut BackgroundColor)>,
@@ -962,10 +1864,7 @@ fn update_overlays(
         Single<&mut Node, With<PausePanel>>,
         Query<&mut Node, With<LeaderOnly>>,
     )>,
-    mut texts: ParamSet<(
-        Single<&mut Text, With<ScoreboardText>>,
-        Single<&mut Text, With<PauseInfo>>,
-    )>,
+    mut scoreboard_title: Single<&mut Text, With<ScoreboardText>>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
     // longer, for a kill.
@@ -994,36 +1893,8 @@ fn update_overlays(
         set_shown(&mut node, session.is_leader());
     }
     if show_scores {
-        set_text(&mut texts.p0(), scoreboard_text(&session));
-    }
-    if paused {
-        let key = |action| settings.bind(action).display();
-        set_text(
-            &mut texts.p1(),
-            format!(
-                "{} {} {} {} move   {} jump (hold to bunny hop, tap in the air to double jump)\n\
-                 {} dash   {} crouch (while running: slide)   {} scores\n\
-                 {} fire   {} aim   {} reload   {} grenade   {} {} {} weapons\n\
-                 Strafe and turn in the air to build speed. Green pads launch you.\n\
-                 Bullets take time to arrive: lead moving targets. Health returns after {} s unhurt.\n\
-                 Keys, mouse and volume are under Settings.",
-                key(Action::Forward),
-                key(Action::Left),
-                key(Action::Back),
-                key(Action::Right),
-                key(Action::Jump),
-                key(Action::Dash),
-                key(Action::Crouch),
-                key(Action::Scores),
-                key(Action::Fire),
-                key(Action::Aim),
-                key(Action::Reload),
-                key(Action::Grenade),
-                key(Action::Primary),
-                key(Action::Secondary),
-                key(Action::Knife),
-                REGEN_DELAY,
-            ),
-        );
+        let mode = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
+        let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
+        set_text(&mut scoreboard_title, format!("{mode}  -  {map_name}"));
     }
 }

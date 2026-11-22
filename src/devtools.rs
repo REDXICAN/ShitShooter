@@ -270,15 +270,19 @@ fn selftest_play(
     }
     if test.reached(5, 8.0) {
         test.capture(&mut commands, "pause.png");
+    }
+    // A screenshot is taken a frame or two after it is asked for, so the
+    // settings open a moment later, not at once.
+    if test.reached(6, 8.3) {
         settings_menu.open = true;
     }
-    if test.reached(6, 8.6) {
+    if test.reached(7, 8.8) {
         test.capture(&mut commands, "settings.png");
     }
-    if test.reached(7, 9.2) {
+    if test.reached(8, 9.2) {
         settings_menu.open = false;
     }
-    if test.reached(8, 9.6) {
+    if test.reached(9, 9.6) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} me {:?} ping {:.1}ms",
