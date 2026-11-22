@@ -26,6 +26,15 @@ pub fn hitbox_half(crouching: bool) -> Vec3 {
     player_half(crouching) + Vec3::new(0.08, 0.05, 0.08)
 }
 
+/// The part of the bullet hitbox that counts as the head: the top of it,
+/// narrower than the shoulders. `center` is the centre of the collision box.
+pub fn head_box(center: Vec3, crouching: bool) -> (Vec3, Vec3) {
+    const HEAD_HALF: Vec3 = Vec3::new(0.3, 0.27, 0.3);
+    let top = center.y + hitbox_half(crouching).y;
+    let mid = Vec3::new(center.x, top - HEAD_HALF.y, center.z);
+    (mid - HEAD_HALF, mid + HEAD_HALF)
+}
+
 pub struct Block {
     pub min: Vec3,
     pub max: Vec3,
@@ -429,6 +438,19 @@ pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_head_is_at_eye_height() {
+        for (crouching, eye) in [(false, STAND_EYE), (true, CROUCH_EYE)] {
+            let center = Vec3::new(3.0, 5.0, -2.0);
+            let feet = center.y - player_half(crouching).y;
+            let (min, max) = head_box(center, crouching);
+            let shot_at = |y: f32| ray_box(Vec3::new(3.0, y, 10.0), Vec3::NEG_Z, min, max).is_some();
+            assert!(shot_at(feet + eye), "crouching: {crouching}");
+            assert!(!shot_at(center.y - 0.1), "crouching: {crouching}");
+            assert!(max.y <= center.y + hitbox_half(crouching).y + 1e-4);
+        }
+    }
 
     fn maps() -> Vec<Map> {
         (0..MAP_NAMES.len() as u8).map(Map::by_id).collect()

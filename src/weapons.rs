@@ -30,6 +30,11 @@ pub struct Weapon {
     pub size: [f32; 3],
     /// Playback speed of the gunshot sound: lower is deeper.
     pub pitch: f32,
+    /// How far each shot throws the view up, and at most sideways (radians).
+    pub kick_up: f32,
+    pub kick_side: f32,
+    /// Damage is multiplied by this when a bullet hits the head.
+    pub headshot: f32,
 }
 
 /// How far a knife reaches, in metres.
@@ -62,6 +67,9 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.0,
         size: [0.04, 0.055, 0.3],
         pitch: 1.0,
+        kick_up: 0.014,
+        kick_side: 0.006,
+        headshot: 2.0,
     },
     Weapon {
         name: "SMG",
@@ -79,6 +87,9 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.05,
         size: [0.04, 0.06, 0.2],
         pitch: 1.3,
+        kick_up: 0.012,
+        kick_side: 0.007,
+        headshot: 1.6,
     },
     Weapon {
         name: "Shotgun",
@@ -96,6 +107,9 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.0,
         size: [0.05, 0.06, 0.34],
         pitch: 0.7,
+        kick_up: 0.075,
+        kick_side: 0.018,
+        headshot: 1.5,
     },
     Weapon {
         name: "Sniper",
@@ -113,6 +127,9 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 0.9,
         size: [0.035, 0.05, 0.44],
         pitch: 0.55,
+        kick_up: 0.1,
+        kick_side: 0.012,
+        headshot: 2.5,
     },
     Weapon {
         name: "Pistol",
@@ -130,6 +147,9 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.05,
         size: [0.035, 0.05, 0.15],
         pitch: 1.45,
+        kick_up: 0.03,
+        kick_side: 0.007,
+        headshot: 2.0,
     },
     Weapon {
         name: "Knife",
@@ -147,12 +167,25 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.12,
         size: [0.012, 0.04, 0.2],
         pitch: 1.0,
+        kick_up: 0.0,
+        kick_side: 0.0,
+        headshot: 1.0,
     },
 ];
 
 /// Unknown ids are treated as the rifle.
 pub fn weapon(id: WeaponId) -> &'static Weapon {
     WEAPONS.get(id as usize).unwrap_or(&WEAPONS[RIFLE as usize])
+}
+
+/// Damage one bullet (or stab) of this weapon deals.
+pub fn hit_damage(id: WeaponId, headshot: bool) -> i32 {
+    let stats = weapon(id);
+    if headshot {
+        (stats.damage as f32 * stats.headshot).round() as i32
+    } else {
+        stats.damage
+    }
 }
 
 /// Name for the kill feed.

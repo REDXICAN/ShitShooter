@@ -967,9 +967,12 @@ fn update_overlays(
         Single<&mut Text, With<PauseInfo>>,
     )>,
 ) {
-    // White ticks for a hit; red, and held a little longer, for a kill.
+    // White ticks for a hit, yellow for a headshot; red, and held a little
+    // longer, for a kill.
     let tick_color = if player.kill_marker > 0.0 {
         Color::srgba(1.0, 0.15, 0.1, (player.kill_marker * 3.0).min(1.0))
+    } else if player.headshot_marker > 0.0 {
+        Color::srgba(1.0, 0.85, 0.1, (player.headshot_marker / HIT_MARKER_TIME * 2.0).clamp(0.0, 1.0))
     } else {
         Color::srgba(1.0, 1.0, 1.0, (player.hit_marker / HIT_MARKER_TIME * 2.0).clamp(0.0, 1.0))
     };

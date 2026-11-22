@@ -232,7 +232,11 @@ fn fire(
         if let Some((reach, victim)) = nearest
             && map.0.raycast(origin, aim_dir, reach).is_none()
         {
-            connection.send(&ClientMsg::Hit { victim, weapon: KNIFE });
+            connection.send(&ClientMsg::Hit {
+                victim,
+                weapon: KNIFE,
+                headshot: false,
+            });
             player.hit_marker = HIT_MARKER_TIME;
             own_sound(Sound::Hit);
         }
@@ -266,6 +270,12 @@ fn fire(
     for dir in dirs {
         spawn_bullet(&mut commands, &assets, weapon_id, session.my_id, origin, dir, rotation * muzzle, true);
     }
+
+    // Then the gun throws the view up and a little to one side. Aiming down
+    // sights and crouching steady it.
+    let steady = (1.0 - 0.3 * player.aim) * if player.crouching { 0.8 } else { 1.0 };
+    let side = (next_random(&mut rng) * 2.0 - 1.0) * stats.kick_side;
+    player.kick_view(Vec2::new(stats.kick_up, side) * steady);
 }
 
 /// xorshift32, returned as a float in 0..1.
@@ -347,7 +357,9 @@ fn fly_bullets(
                     && t < reach
                 {
                     reach = t;
-                    victim = Some(remote.id);
+                    let (head_min, head_max) = map::head_box(center, remote.crouching);
+                    let headshot = map::ray_box(bullet.pos, dir, head_min, head_max).is_some();
+                    victim = Some((remote.id, headshot));
                 }
             }
             // Somebody else's bullet ends at our own body. Whether it hurt is
@@ -356,16 +368,20 @@ fn fly_bullets(
                 let half = map::hitbox_half(player.crouching);
                 stopped |= map::ray_box(bullet.pos, dir, player.pos - half, player.pos + half).is_some_and(|t| t < reach);
             }
-            if let Some(victim) = victim {
+            if let Some((victim, headshot)) = victim {
                 stopped = true;
                 if mine {
                     connection.send(&ClientMsg::Hit {
                         victim,
                         weapon: bullet.weapon,
+                        headshot,
                     });
                     player.hit_marker = HIT_MARKER_TIME;
+                    if headshot {
+                        player.headshot_marker = HIT_MARKER_TIME;
+                    }
                     sounds.write(SoundCue {
-                        sound: Sound::Hit,
+                        sound: if headshot { Sound::Headshot } else { Sound::Hit },
                         at: None,
                     });
                 }

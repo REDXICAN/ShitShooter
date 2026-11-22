@@ -55,6 +55,8 @@ pub enum Sound {
     Gunshot(WeaponId),
     /// The tick of one of our bullets reaching somebody.
     Hit,
+    /// The same, sharper and louder, for a headshot.
+    Headshot,
     /// The chime of a kill.
     Kill,
     Footstep,
@@ -120,6 +122,7 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
                 (0.94 + random * 0.12) * weapon(weapon_id).pitch,
             ),
             Sound::Hit => (sounds.tick.clone(), 0.55, 0.96 + random * 0.08),
+            Sound::Headshot => (sounds.tick.clone(), 0.85, 1.6),
             Sound::Kill => (sounds.chime.clone(), 0.6, 1.0),
             Sound::Footstep => (
                 sounds.footsteps[(random * 97.0) as usize % sounds.footsteps.len()].clone(),

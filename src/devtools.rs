@@ -319,7 +319,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
     for cue in cues.read() {
         let slot = match cue.sound {
             Sound::Gunshot(_) => &mut count.gunshots,
-            Sound::Hit => &mut count.hits,
+            Sound::Hit | Sound::Headshot => &mut count.hits,
             Sound::Kill => &mut count.kills,
             Sound::Footstep => &mut count.footsteps,
             Sound::Land => &mut count.landings,

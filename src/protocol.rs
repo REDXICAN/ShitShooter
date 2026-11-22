@@ -81,7 +81,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-3:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-4:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -128,7 +128,12 @@ pub enum ClientMsg {
     /// One of our bullets (or our knife) reached somebody. The shooter decides
     /// what it hit, because that feels right at any ping; the server only
     /// rejects claims that are plainly impossible.
-    Hit { victim: PlayerId, weapon: WeaponId },
+    Hit {
+        victim: PlayerId,
+        weapon: WeaponId,
+        /// It struck the head (never for the knife).
+        headshot: bool,
+    },
     /// Throw a grenade. The server simulates it and deals the damage.
     Grenade { origin: [f32; 3], vel: [f32; 3] },
 }

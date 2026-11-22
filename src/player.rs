@@ -52,6 +52,13 @@ const SLIDE_DECEL: f32 = 6.0;
 /// Below this speed a slide turns into an ordinary crouch.
 const SLIDE_END_SPEED: f32 = 5.0;
 
+/// Looking straight up or down stops just short of vertical.
+const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
+/// Recoil: the view holds where shots threw it for this long after the last
+/// one, then drifts back at this rate (fraction per second, roughly).
+const KICK_HOLD: f32 = 0.14;
+const KICK_RECOVERY: f32 = 9.0;
+
 /// Field of view of the menu camera, in radians.
 pub const BASE_FOV: f32 = 1.3;
 pub const VIEW_MODEL_REST: Vec3 = Vec3::new(0.2, -0.17, -0.42);
@@ -142,9 +149,16 @@ pub struct LocalPlayer {
     pub knife_cooldown: f32,
     /// 1 right after a shot or stab, decays to 0. Drives the gun kick.
     pub recoil: f32,
+    /// How far shots have thrown the view (pitch, yaw) that has not yet
+    /// drifted back. Pulling the mouse against it pays it off early.
+    pub view_kick: Vec2,
+    /// Seconds after the last shot before the view starts drifting back.
+    pub kick_hold: f32,
     pub killed_by: Option<String>,
     /// Seconds the hit marker stays visible.
     pub hit_marker: f32,
+    /// Seconds the hit marker stays yellow, for a headshot.
+    pub headshot_marker: f32,
     /// 1 right after a kill, decays to 0. Turns the hit marker red.
     pub kill_marker: f32,
     /// 1 right after taking damage, decays to 0.
@@ -183,8 +197,11 @@ impl Default for LocalPlayer {
             draw: 0.0,
             knife_cooldown: 0.0,
             recoil: 0.0,
+            view_kick: Vec2::ZERO,
+            kick_hold: 0.0,
             killed_by: None,
             hit_marker: 0.0,
+            headshot_marker: 0.0,
             kill_marker: 0.0,
             damage_flash: 0.0,
             crouching: false,
@@ -228,6 +245,22 @@ impl LocalPlayer {
 
     pub fn horizontal_speed(&self) -> f32 {
         self.vel.with_y(0.0).length()
+    }
+
+    /// Throws the view by `kick` (pitch, yaw) for a shot just fired.
+    pub fn kick_view(&mut self, kick: Vec2) {
+        let pitch = (self.pitch + kick.x).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.view_kick += Vec2::new(pitch - self.pitch, kick.y);
+        self.pitch = pitch;
+        self.yaw += kick.y;
+        self.kick_hold = KICK_HOLD;
+    }
+}
+
+/// Mouse movement against the recoil counts towards bringing the view back.
+fn pay_off(owed: &mut f32, moved: f32) {
+    if *owed * moved < 0.0 {
+        *owed = owed.signum() * (owed.abs() - moved.abs()).max(0.0);
     }
 }
 
@@ -302,12 +335,16 @@ fn look(
     if !controls.captured || mouse.delta == Vec2::ZERO {
         return;
     }
-    const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
     // Aiming turns the view slower in step with the zoom, so it feels the same on screen.
     let aimed = player.weapon().zoom * settings.ads_sensitivity;
     let sensitivity = settings.sensitivity * 0.001 * (1.0 + (aimed - 1.0) * player.aim);
-    player.yaw -= mouse.delta.x * sensitivity;
-    player.pitch = (player.pitch - mouse.delta.y * sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    let p = &mut *player;
+    let turn = -mouse.delta.x * sensitivity;
+    let pitch = (p.pitch - mouse.delta.y * sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    pay_off(&mut p.view_kick.x, pitch - p.pitch);
+    pay_off(&mut p.view_kick.y, turn);
+    p.yaw += turn;
+    p.pitch = pitch;
 }
 
 fn movement(time: Res<Time>, input: ActionInput, map: Res<GameMap>, mut player: ResMut<LocalPlayer>) {
@@ -490,7 +527,19 @@ fn follow_camera(
     // A stab lasts longer than a gun's kick.
     player.recoil = (player.recoil - dt * if knife { 4.0 } else { 9.0 }).max(0.0);
     player.throw_anim = (player.throw_anim - dt * 2.5).max(0.0);
+    // Once the shooting stops, the view drifts back to where it was aimed.
+    player.kick_hold = (player.kick_hold - dt).max(0.0);
+    if player.kick_hold <= 0.0 && player.view_kick != Vec2::ZERO {
+        let back = player.view_kick * (dt * KICK_RECOVERY).min(1.0);
+        player.view_kick -= back;
+        player.pitch = (player.pitch - back.x).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        player.yaw -= back.y;
+        if player.view_kick.length_squared() < 1e-8 {
+            player.view_kick = Vec2::ZERO;
+        }
+    }
     player.hit_marker = (player.hit_marker - dt).max(0.0);
+    player.headshot_marker = (player.headshot_marker - dt).max(0.0);
     player.kill_marker = (player.kill_marker - dt * 1.6).max(0.0);
     player.damage_flash = (player.damage_flash - dt * 2.5).max(0.0);
     let eye_target = if player.crouching { CROUCH_EYE } else { STAND_EYE };

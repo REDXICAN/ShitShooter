@@ -20,7 +20,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 use crate::{
     map::{self, Map},
     protocol::*,
-    weapons::{self, KNIFE, KNIFE_RANGE, WEAPONS, WeaponId, weapon},
+    weapons::{self, KNIFE, KNIFE_RANGE, WEAPONS, WeaponId, hit_damage, weapon},
 };
 
 const TICK: Duration = Duration::from_micros(1_000_000 / 60);
@@ -429,7 +429,11 @@ impl Server {
                 self.roster_dirty = true;
             }
             ClientMsg::Fire { weapon, origin, dirs } => self.handle_fire(id, weapon, origin, dirs),
-            ClientMsg::Hit { victim, weapon } => self.handle_hit(id, victim, weapon),
+            ClientMsg::Hit {
+                victim,
+                weapon,
+                headshot,
+            } => self.handle_hit(id, victim, weapon, headshot),
             ClientMsg::Grenade { origin, vel } => self.handle_grenade(id, origin, vel),
             _ => {}
         }
@@ -476,7 +480,7 @@ impl Server {
     /// The shooter's client says one of its bullets, or its knife, reached
     /// `victim_id`. Accepted if the shooter really had a bullet in the air (or
     /// a knife swing going and the victim within reach).
-    fn handle_hit(&mut self, shooter_id: PlayerId, victim_id: PlayerId, weapon_id: WeaponId) {
+    fn handle_hit(&mut self, shooter_id: PlayerId, victim_id: PlayerId, weapon_id: WeaponId, headshot: bool) {
         if self.phase != Phase::Playing || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
             return;
         }
@@ -499,7 +503,8 @@ impl Server {
             false
         };
         if allowed {
-            self.damage(victim_id, shooter_id, weapon(weapon_id).damage, weapon_id);
+            let headshot = headshot && weapon_id != KNIFE;
+            self.damage(victim_id, shooter_id, hit_damage(weapon_id, headshot), weapon_id);
         }
     }
 
