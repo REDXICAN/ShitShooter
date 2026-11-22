@@ -1,0 +1,302 @@
+//! The static scene: map geometry, lighting, the camera and shared assets.
+
+use bevy::{light::NotShadowCaster, prelude::*};
+
+use crate::{
+    map::Map,
+    net::Session,
+    protocol::{HILL_RADIUS, MODE_HILL, PLAYER_COLOR_COUNT},
+};
+
+pub struct WorldPlugin;
+
+impl Plugin for WorldPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(GameMap(Map::arena()))
+            .insert_resource(ClearColor(Color::srgb(0.03, 0.04, 0.07)))
+            .insert_resource(GlobalAmbientLight {
+                color: Color::srgb(0.75, 0.82, 1.0),
+                brightness: 350.0,
+                ..default()
+            })
+            .add_systems(Startup, setup)
+            .add_systems(
+                Update,
+                (build_map.run_if(resource_changed::<GameMap>), show_hill).chain(),
+            );
+    }
+}
+
+/// The map being shown and played. Replacing it rebuilds the scenery.
+#[derive(Resource)]
+pub struct GameMap(pub Map);
+
+/// A block or jump pad of the current map.
+#[derive(Component)]
+struct MapGeometry;
+
+/// The one camera. It orbits the arena in menus and is the player's eyes in a match.
+#[derive(Component)]
+pub struct MainCamera;
+
+/// The gun in the corner of the screen.
+#[derive(Component)]
+pub struct ViewModel;
+
+/// The boxes the weapon in hand is made of. `player.rs` sizes and places them
+/// for whichever weapon it is.
+#[derive(Component)]
+pub enum ViewModelPart {
+    /// Receiver and barrel, or the knife's blade.
+    Body,
+    Grip,
+    Sight,
+    /// Drops out during a reload.
+    Magazine,
+}
+
+/// The glowing column that marks the hill in king of the hill.
+#[derive(Component)]
+struct HillZone;
+
+/// Meshes and materials that are reused all over the place.
+#[derive(Resource)]
+pub struct SharedAssets {
+    pub cube: Handle<Mesh>,
+    /// A player's torso and legs: 1.3 m tall.
+    pub body: Handle<Mesh>,
+    /// A sphere 1 m across; scale it to size.
+    pub sphere: Handle<Mesh>,
+    pub tracer: Handle<StandardMaterial>,
+    pub enemy_tracer: Handle<StandardMaterial>,
+    pub explosion: Handle<StandardMaterial>,
+    pub grenade: Handle<StandardMaterial>,
+    pad: Handle<StandardMaterial>,
+    hill_mesh: Handle<Mesh>,
+    /// Indexed by `Snapshot::hill`: empty, held by red, held by blue, contested.
+    hill_materials: [Handle<StandardMaterial>; 4],
+    pub dark: Handle<StandardMaterial>,
+    pub player_colors: Vec<Handle<StandardMaterial>>,
+}
+
+pub const PLAYER_COLORS: [[f32; 3]; PLAYER_COLOR_COUNT as usize] = [
+    [0.95, 0.25, 0.25],
+    [0.25, 0.60, 1.00],
+    [0.30, 0.90, 0.35],
+    [1.00, 0.80, 0.15],
+    [0.85, 0.35, 0.95],
+    [0.15, 0.90, 0.85],
+    [1.00, 0.50, 0.10],
+    [0.95, 0.95, 0.95],
+];
+
+pub fn player_color(index: u8) -> Color {
+    let [r, g, b] = PLAYER_COLORS[index as usize % PLAYER_COLORS.len()];
+    Color::srgb(r, g, b)
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let mut glowing = |color: LinearRgba| {
+        materials.add(StandardMaterial {
+            base_color: Color::BLACK,
+            emissive: color,
+            unlit: false,
+            ..default()
+        })
+    };
+    let tracer = glowing(LinearRgba::rgb(12.0, 9.0, 2.0));
+    let enemy_tracer = glowing(LinearRgba::rgb(12.0, 2.5, 1.5));
+    let explosion = glowing(LinearRgba::rgb(30.0, 13.0, 3.0));
+    let pad = glowing(LinearRgba::rgb(0.4, 5.0, 3.0));
+    let grenade = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.16, 0.24, 0.12),
+        emissive: LinearRgba::rgb(0.5, 0.06, 0.03),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    let dark = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.05, 0.06),
+        perceptual_roughness: 0.4,
+        ..default()
+    });
+    let gun_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.16, 0.17, 0.2),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+    let player_colors = (0..PLAYER_COLOR_COUNT)
+        .map(|index| {
+            materials.add(StandardMaterial {
+                base_color: player_color(index),
+                perceptual_roughness: 0.6,
+                ..default()
+            })
+        })
+        .collect();
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 9000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(30.0, 60.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        MainCamera,
+        Camera3d::default(),
+        // Ears, for spatial audio.
+        SpatialListener::new(0.3),
+        Projection::from(PerspectiveProjection {
+            fov: crate::player::BASE_FOV,
+            near: 0.05,
+            ..default()
+        }),
+        Transform::from_xyz(0.0, 30.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+        children![(
+            ViewModel,
+            Transform::from_translation(crate::player::VIEW_MODEL_REST),
+            Visibility::Hidden,
+            children![
+                gun_part(ViewModelPart::Body, &cube, &gun_material),
+                gun_part(ViewModelPart::Grip, &cube, &dark),
+                gun_part(ViewModelPart::Sight, &cube, &dark),
+                gun_part(ViewModelPart::Magazine, &cube, &dark),
+            ],
+        )],
+    ));
+
+    let hill_materials = [
+        [0.9, 0.9, 0.9, 0.04],
+        [1.0, 0.2, 0.15, 0.11],
+        [0.2, 0.45, 1.0, 0.11],
+        [1.0, 0.8, 0.1, 0.11],
+    ]
+    .map(|[r, g, b, a]| {
+        materials.add(StandardMaterial {
+            base_color: Color::srgba(r, g, b, a),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            // Visible from the inside too.
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        })
+    });
+
+    commands.insert_resource(SharedAssets {
+        hill_mesh: meshes.add(Cylinder::new(HILL_RADIUS, HILL_HEIGHT)),
+        hill_materials,
+        body: meshes.add(Capsule3d::new(0.34, 0.62)),
+        sphere: meshes.add(Sphere::new(0.5).mesh().ico(4).expect("valid sphere")),
+        cube,
+        tracer,
+        enemy_tracer,
+        explosion,
+        grenade,
+        pad,
+        dark,
+        player_colors,
+    });
+}
+
+const HILL_HEIGHT: f32 = 12.0;
+
+fn gun_part(part: ViewModelPart, cube: &Handle<Mesh>, material: &Handle<StandardMaterial>) -> impl Bundle {
+    (
+        part,
+        Mesh3d(cube.clone()),
+        MeshMaterial3d(material.clone()),
+        NotShadowCaster,
+    )
+}
+
+/// The hill's column is shown in king of the hill, in the colour of whoever holds it.
+fn show_hill(
+    session: Res<Session>,
+    assets: Res<SharedAssets>,
+    mut zone: Query<(&mut Visibility, &mut MeshMaterial3d<StandardMaterial>), With<HillZone>>,
+) {
+    for (mut visibility, mut material) in &mut zone {
+        let wanted = if session.mode == MODE_HILL {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+        let holder = &assets.hill_materials[session.hill as usize % 4];
+        if material.0 != *holder {
+            material.0 = holder.clone();
+        }
+    }
+}
+
+/// Replaces the scenery whenever the map changes (and builds it the first time).
+fn build_map(
+    mut commands: Commands,
+    map: Res<GameMap>,
+    assets: Res<SharedAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    old: Query<Entity, With<MapGeometry>>,
+) {
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+
+    // One material per distinct colour.
+    let mut block_materials: Vec<([f32; 3], Handle<StandardMaterial>)> = Vec::new();
+    for block in map.0.blocks.iter().filter(|b| b.visible) {
+        let material = match block_materials.iter().find(|(c, _)| *c == block.color) {
+            Some((_, handle)) => handle.clone(),
+            None => {
+                let [r, g, b] = block.color;
+                let handle = materials.add(StandardMaterial {
+                    base_color: Color::srgb(r, g, b),
+                    perceptual_roughness: 0.9,
+                    ..default()
+                });
+                block_materials.push((block.color, handle.clone()));
+                handle
+            }
+        };
+        commands.spawn((
+            MapGeometry,
+            Mesh3d(assets.cube.clone()),
+            MeshMaterial3d(material),
+            Transform::from_translation((block.min + block.max) / 2.0)
+                .with_scale(block.max - block.min),
+        ));
+    }
+
+    for pad in &map.0.pads {
+        commands.spawn((
+            MapGeometry,
+            Mesh3d(assets.cube.clone()),
+            MeshMaterial3d(assets.pad.clone()),
+            Transform::from_translation(pad.center + Vec3::Y * 0.03).with_scale(Vec3::new(
+                pad.half_size * 2.0,
+                0.06,
+                pad.half_size * 2.0,
+            )),
+            NotShadowCaster,
+        ));
+    }
+
+    commands.spawn((
+        MapGeometry,
+        HillZone,
+        Mesh3d(assets.hill_mesh.clone()),
+        MeshMaterial3d(assets.hill_materials[0].clone()),
+        Transform::from_translation(map.0.hill + Vec3::Y * HILL_HEIGHT / 2.0),
+        NotShadowCaster,
+        Visibility::Hidden,
+    ));
+}
