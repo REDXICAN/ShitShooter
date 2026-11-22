@@ -195,8 +195,9 @@ fn launch_game(game: &Path, dir: &Path, args: &[String]) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // The game gets its own console window, as if it had been double-clicked,
-        // so this one can close.
+        // Current game builds are GUI apps and get no console from this. Older
+        // builds (still installed when offline) had one: they get their own
+        // window, as if double-clicked, so this one can close.
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         command.creation_flags(CREATE_NEW_CONSOLE);
     }

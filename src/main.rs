@@ -2,6 +2,12 @@
 //!
 //! Run with no arguments for the menu, or see `--help`.
 
+// Release builds are a Windows GUI app, so no console window opens next to the
+// game. Debug builds (`cargo run`) keep the console for the log output.
+// The modes that print text (`--server`, `--help`, `--selftest`) attach to a
+// console themselves; see `attach_console`.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod audio;
 mod combat;
 mod devtools;
@@ -123,15 +129,28 @@ fn main() {
     let args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
-            if !message.is_empty() {
-                eprintln!("error: {message}\n");
+            if attach_console(false) {
+                if !message.is_empty() {
+                    eprintln!("error: {message}\n");
+                }
+                print!("{HELP}");
+            } else {
+                // Started without a terminal (e.g. a shortcut with bad options).
+                let error = if message.is_empty() { String::new() } else { format!("error: {message}\n\n") };
+                show_error_box(&format!("{error}{HELP}"));
             }
-            print!("{HELP}");
             return;
         }
     };
 
+    if args.selftest.is_some() {
+        attach_console(false);
+    }
+
     if args.dedicated {
+        // The server has no game window, so it always needs a console: the
+        // terminal it was started from, or a new window.
+        attach_console(true);
         match Server::bind(args.server.clone()) {
             Ok(server) => {
                 println!(
@@ -263,3 +282,25 @@ fn show_error_box(text: &str) {
 
 #[cfg(not(windows))]
 fn show_error_box(_text: &str) {}
+
+/// Makes `println!` reach a console in release builds, which have none of
+/// their own. Uses the console of the terminal that started the game; failing
+/// that, opens a new console window if `open_new` is set. Returns whether there
+/// is somewhere for text to go (always true in debug builds and off Windows).
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_console(open_new: bool) -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn AllocConsole() -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: plain Win32 calls without pointers; they fail harmlessly if the
+    // process already has a console.
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 || (open_new && AllocConsole() != 0) }
+}
+
+#[cfg(not(all(windows, not(debug_assertions))))]
+fn attach_console(_open_new: bool) -> bool {
+    true
+}
