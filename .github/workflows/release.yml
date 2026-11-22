@@ -50,7 +50,59 @@ jobs:
           Set-Content out\version.txt $env:SHITSHOOTER_BUILD -NoNewline
           $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
           Set-Content out\launcher-version.txt $launcher -NoNewline
+          # Asset list, one line per file under assets/: "<sha256> <size> <path>".
+          # The launcher compares it with what is installed and downloads only
+          # the files that changed.
+          $lines = @()
+          if (Test-Path assets) {
+            $root = (Resolve-Path assets).Path
+            $lines = Get-ChildItem assets -Recurse -File | Sort-Object FullName | ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              $path = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+              "$hash $($_.Length) $path"
+            }
+          }
+          Set-Content out\assets.txt ($lines -join "`n") -NoNewline
           Get-ChildItem out
+          Get-Content out\assets.txt
+
+      # Asset files live in one release that is never deleted (tag "assets"),
+      # each named by its hash, so a file is uploaded once and every later build
+      # reuses it. This runs before the build is published, so the asset list
+      # never points at files that are not there yet.
+      - name: Upload new assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view assets --json tagName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create assets `
+              --title "Game assets" `
+              --notes "Models, textures and sounds for every build, named by their SHA-256 hash. The launcher downloads them from here. Do not delete this release." `
+              --prerelease `
+              --latest=false
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          $have = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]@(gh release view assets --json assets --jq '.assets[].name'))
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory upload | Out-Null
+          foreach ($line in Get-Content out\assets.txt) {
+            if (-not $line) { continue }
+            $hash, $size, $path = $line -split ' ', 3
+            if ($have.Add($hash)) {
+              Write-Host "New: $path ($hash)"
+              Copy-Item (Join-Path assets $path) (Join-Path upload $hash)
+            }
+          }
+          $new = @(Get-ChildItem upload -File)
+          if ($new.Count -gt 0) {
+            gh release upload assets $new.FullName
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            Write-Host "No new asset files."
+          }
 
       - name: Publish release
         shell: pwsh
@@ -76,8 +128,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $old = gh release list --limit 1000 --json tagName,createdAt `
-            --jq "sort_by(.createdAt) | reverse | .[$($env:KEEP_RELEASES):] | .[].tagName"
+          # Newest first. The "assets" release is shared by every build and is
+          # never deleted.
+          $builds = gh release list --limit 1000 --json tagName,createdAt `
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName'
+          $old = $builds | Where-Object { $_ -and $_ -ne 'assets' } |
+            Select-Object -Skip ([int]$env:KEEP_RELEASES)
           foreach ($tag in $old) {
             if ($tag) { gh release delete $tag --yes --cleanup-tag }
           }

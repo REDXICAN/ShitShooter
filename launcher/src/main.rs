@@ -4,7 +4,14 @@
 //! The game lives in `%LOCALAPPDATA%\ShitShooter`, so the launcher itself can
 //! sit anywhere (desktop, downloads). Without internet it starts whatever is
 //! installed. Any arguments are passed on to the game (e.g. `--join <addr>`).
+//!
+//! Game assets (models, textures, sounds) go to `assets\` next to the game, where
+//! Bevy looks for them. Each build lists its assets in `assets.txt`, and only the
+//! files that changed are downloaded. The files themselves live in one long-lived
+//! release (tag `assets`), named by their SHA-256 hash.
 
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +25,14 @@ const LAUNCHER_EXE: &str = "ShitShooterLauncher.exe";
 const GAME_VERSION_FILE: &str = "version.txt";
 /// Release asset holding the launcher version, for the launcher's self-update.
 const LAUNCHER_VERSION_FILE: &str = "launcher-version.txt";
+/// Release asset listing the build's asset files, one per line:
+/// `<sha256> <size in bytes> <path under assets/>`. The installed build's copy
+/// is kept in the install folder, so the next update knows what is there.
+const ASSETS_MANIFEST: &str = "assets.txt";
+/// Tag of the release that holds every asset file, named by its hash.
+const ASSETS_TAG: &str = "assets";
+/// Folder next to the game exe that Bevy loads assets from.
+const ASSETS_DIR: &str = "assets";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Set on the freshly updated launcher so it never tries to update itself again
 /// in the same run (guards against a loop if a release is ever inconsistent).
@@ -66,7 +81,12 @@ fn run(args: &[String]) -> Result<()> {
 
     println!("Checking for updates...");
     match fetch_text(&agent, GAME_VERSION_FILE) {
-        Ok(latest) if installed.as_deref() == Some(latest.as_str()) => {
+        // No asset list means the assets never finished installing (or an old
+        // launcher installed this build), so that counts as out of date.
+        Ok(latest)
+            if installed.as_deref() == Some(latest.as_str())
+                && dir.join(ASSETS_MANIFEST).exists() =>
+        {
             println!("Up to date ({latest}).");
         }
         Ok(latest) => {
@@ -109,6 +129,10 @@ fn download_url(file: &str) -> String {
     format!("https://github.com/{REPO}/releases/latest/download/{file}")
 }
 
+fn asset_url(hash: &str) -> String {
+    format!("https://github.com/{REPO}/releases/download/{ASSETS_TAG}/{hash}")
+}
+
 fn fetch_text(agent: &ureq::Agent, file: &str) -> Result<String> {
     let text = agent
         .get(download_url(file))
@@ -118,9 +142,9 @@ fn fetch_text(agent: &ureq::Agent, file: &str) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
-/// Downloads a release asset to `dest`, printing progress.
-fn download(agent: &ureq::Agent, file: &str, dest: &Path) -> Result<()> {
-    let mut response = agent.get(download_url(file)).call().map_err(describe)?;
+/// Downloads `url` to `dest`, printing progress.
+fn download(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<()> {
+    let mut response = agent.get(url).call().map_err(describe)?;
     let total: Option<u64> = response
         .headers()
         .get("content-length")
@@ -153,8 +177,11 @@ fn download(agent: &ureq::Agent, file: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+fn mb(bytes: u64) -> f64 {
+    bytes as f64 / 1_048_576.0
+}
+
 fn print_progress(done: u64, total: Option<u64>) {
-    let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
     match total {
         Some(total) if total > 0 => print!(
             "\r  {:.1} / {:.1} MB ({}%)   ",
@@ -167,10 +194,12 @@ fn print_progress(done: u64, total: Option<u64>) {
     let _ = std::io::stdout().flush();
 }
 
-/// Downloads the latest game next to the installed one, then swaps it in.
+/// Brings the assets up to date, then downloads the latest game next to the
+/// installed one and swaps it in.
 fn install_game(agent: &ureq::Agent, dir: &Path, version: &str) -> Result<()> {
+    sync_assets(agent, dir)?;
     let partial = dir.join(format!("{GAME_EXE}.download"));
-    let result = download(agent, GAME_EXE, &partial);
+    let result = download(agent, &download_url(GAME_EXE), &partial);
     if let Err(e) = result {
         let _ = fs::remove_file(&partial);
         return Err(e);
@@ -186,6 +215,139 @@ fn install_game(agent: &ureq::Agent, dir: &Path, version: &str) -> Result<()> {
     let _ = fs::write(dir.join(GAME_VERSION_FILE), version);
     println!("Done.");
     Ok(())
+}
+
+struct AssetEntry {
+    hash: String,
+    size: u64,
+    /// Relative to the assets folder, with `/` separators.
+    path: String,
+}
+
+/// Makes `assets\` match the latest build's asset list: downloads files that
+/// are missing or changed, and deletes files an earlier build installed that
+/// this one no longer lists. Files the list does not know about are left alone.
+fn sync_assets(agent: &ureq::Agent, dir: &Path) -> Result<()> {
+    let text = fetch_text(agent, ASSETS_MANIFEST)
+        .map_err(|e| format!("could not get the asset list: {e}"))?;
+    let wanted = parse_manifest(&text)?;
+    let manifest_path = dir.join(ASSETS_MANIFEST);
+    let installed = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|old| parse_manifest(&old).ok())
+        .unwrap_or_default();
+    let known: HashMap<&str, &str> = installed
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry.hash.as_str()))
+        .collect();
+
+    let missing: Vec<&AssetEntry> = wanted
+        .iter()
+        .filter(|entry| !is_installed(dir, entry, &known))
+        .collect();
+    if !missing.is_empty() {
+        let total: u64 = missing.iter().map(|entry| entry.size).sum();
+        println!("Downloading {} asset file(s), {:.1} MB", missing.len(), mb(total));
+        for entry in missing {
+            install_asset(agent, dir, entry)?;
+        }
+    }
+
+    let kept: HashSet<&str> = wanted.iter().map(|entry| entry.path.as_str()).collect();
+    for old in installed.iter().filter(|entry| !kept.contains(entry.path.as_str())) {
+        let _ = fs::remove_file(asset_path(dir, &old.path));
+    }
+    fs::write(&manifest_path, text)
+        .map_err(|e| format!("could not write {}: {e}", manifest_path.display()))
+}
+
+fn parse_manifest(text: &str) -> Result<Vec<AssetEntry>> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let bad = || format!("bad line in {ASSETS_MANIFEST}: {line}");
+            let mut parts = line.splitn(3, ' ');
+            let (Some(hash), Some(size), Some(path)) = (parts.next(), parts.next(), parts.next())
+            else {
+                return Err(bad());
+            };
+            let size = size.parse().map_err(|_| bad())?;
+            let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            if !hash_ok || !is_safe_asset_path(path) {
+                return Err(bad());
+            }
+            Ok(AssetEntry { hash: hash.to_ascii_lowercase(), size, path: path.to_string() })
+        })
+        .collect()
+}
+
+/// Only plain relative paths, so a bad list can never write outside `assets\`.
+fn is_safe_asset_path(path: &str) -> bool {
+    path.split('/').all(|part| {
+        !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':'])
+    })
+}
+
+fn asset_path(dir: &Path, path: &str) -> PathBuf {
+    let mut full = dir.join(ASSETS_DIR);
+    full.extend(path.split('/'));
+    full
+}
+
+/// True when the file is already there with the right contents. Files the last
+/// install recorded with the same hash only get a size check; anything else is
+/// hashed, so a half-finished earlier install does not download everything again.
+fn is_installed(dir: &Path, entry: &AssetEntry, known: &HashMap<&str, &str>) -> bool {
+    let path = asset_path(dir, &entry.path);
+    let Ok(meta) = fs::metadata(&path) else {
+        return false;
+    };
+    if meta.len() != entry.size {
+        return false;
+    }
+    known.get(entry.path.as_str()) == Some(&entry.hash.as_str())
+        || file_sha256(&path).is_ok_and(|hash| hash == entry.hash)
+}
+
+/// Downloads one asset next to its final place, checks its hash, then moves it in.
+fn install_asset(agent: &ureq::Agent, dir: &Path, entry: &AssetEntry) -> Result<()> {
+    println!("  {}", entry.path);
+    let dest = asset_path(dir, &entry.path);
+    let mut partial = dest.clone().into_os_string();
+    partial.push(".download");
+    let partial = PathBuf::from(partial);
+
+    let result = (|| {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        }
+        download(agent, &asset_url(&entry.hash), &partial)?;
+        if file_sha256(&partial)? != entry.hash {
+            return Err("the download was corrupted".to_string());
+        }
+        fs::rename(&partial, &dest).map_err(|e| format!("could not replace {}: {e}", dest.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result.map_err(|e| format!("{}: {e}", entry.path))
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 256 * 1024];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn launch_game(game: &Path, dir: &Path, args: &[String]) -> Result<()> {
@@ -222,7 +384,7 @@ fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let new = me.with_extension("exe.new");
     let old = me.with_extension("exe.old");
-    if let Err(e) = download(agent, LAUNCHER_EXE, &new) {
+    if let Err(e) = download(agent, &download_url(LAUNCHER_EXE), &new) {
         let _ = fs::remove_file(&new);
         return Err(e);
     }
@@ -265,4 +427,59 @@ fn pause() {
 
 fn pause_quietly() {
     let _ = std::io::stdin().read_line(&mut String::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const M4: &str = "5fe4098259c581a5aa5f7dbf6aa0d8c5a4be9cb384480b88e303e87c4cf97b30";
+
+    #[test]
+    fn parses_manifest_lines() {
+        let text = format!("{M4} 729090 models/M4A1.gltf\n\n{M4} 1 sounds/a b.wav\n");
+        let entries = parse_manifest(&text).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].size, 729090);
+        assert_eq!(entries[1].path, "sounds/a b.wav");
+        assert!(parse_manifest("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_lines() {
+        for line in [
+            format!("{M4} 1 ../evil.exe"),
+            format!("{M4} 1 models/../../evil.exe"),
+            format!("{M4} 1 C:/evil.exe"),
+            format!("{M4} 1 /evil.exe"),
+            format!("{M4} 1 models\\x.gltf"),
+            format!("{M4} big models/x.gltf"),
+            "abc 1 models/x.gltf".to_string(),
+            M4.to_string(),
+        ] {
+            assert!(parse_manifest(&line).is_err(), "accepted {line}");
+        }
+    }
+
+    #[test]
+    fn hashes_and_checks_installed_files() {
+        let dir = std::env::temp_dir().join(format!("shitshooter-launcher-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let file = asset_path(&dir, "models/x.bin");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"abc").unwrap();
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(file_sha256(&file).unwrap(), abc);
+
+        let entry = |hash: &str, size| AssetEntry { hash: hash.into(), size, path: "models/x.bin".into() };
+        let none = HashMap::new();
+        assert!(is_installed(&dir, &entry(abc, 3), &none));
+        assert!(!is_installed(&dir, &entry(abc, 4), &none));
+        assert!(!is_installed(&dir, &entry(M4, 3), &none));
+        // Recorded by the last install: trusted on size alone.
+        let known = HashMap::from([("models/x.bin", M4)]);
+        assert!(is_installed(&dir, &entry(M4, 3), &known));
+        assert!(!is_installed(&dir, &AssetEntry { path: "models/missing".into(), ..entry(abc, 3) }, &none));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

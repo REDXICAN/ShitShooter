@@ -1,4 +1,4 @@
-# Builds the exe to send to friends: dist\shitshooter.exe
+# Builds the game to send to friends: dist\shitshooter.exe plus dist\assets
 #
 # Compared to a plain `cargo build --release`, the C runtime is linked into the
 # exe, so it runs on PCs that do not have the Visual C++ Redistributable.
@@ -14,4 +14,7 @@ try {
     Write-Host "dist\shitshooter.exe is in use, so it was not replaced. Close the game and run this again."
     exit 1
 }
-Write-Host "Built dist\shitshooter.exe"
+# The game loads models, textures and sounds from assets\ next to the exe.
+if (Test-Path dist\assets) { Remove-Item -Recurse -Force dist\assets }
+if (Test-Path assets) { Copy-Item -Recurse assets dist\assets }
+Write-Host "Built dist\shitshooter.exe and dist\assets (send both)"
