@@ -454,8 +454,8 @@ fn movement(time: Res<Time>, input: ActionInput, map: Res<GameMap>, mut player: 
         start_slide(p);
     }
 
-    if let Some(launch) = map.0.pad_at(p.feet()) {
-        p.vel = Vec3::new(p.vel.x * 0.5 + launch.x, launch.y, p.vel.z * 0.5 + launch.z);
+    if let Some(pad) = map.0.pad_at(p.feet()) {
+        p.vel = pad.launch_velocity(p.vel);
         p.grounded = false;
         p.sliding = false;
     }

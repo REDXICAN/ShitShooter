@@ -288,6 +288,27 @@ fn build_map(
             )),
             NotShadowCaster,
         ));
+
+        // Arrow pads get two dark chevrons pointing where they throw you.
+        let Some(dir) = pad.direction() else {
+            continue;
+        };
+        const ARM: f32 = 0.7;
+        for tip in [0.5, -0.1] {
+            let tip = pad.center + dir * tip * pad.half_size + Vec3::Y * 0.07;
+            for angle in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
+                let arm = Quat::from_rotation_y(angle) * dir;
+                commands.spawn((
+                    MapGeometry,
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(assets.dark.clone()),
+                    Transform::from_translation(tip - arm * ARM / 2.0)
+                        .looking_to(arm, Vec3::Y)
+                        .with_scale(Vec3::new(0.18, 0.02, ARM)),
+                    NotShadowCaster,
+                ));
+            }
+        }
     }
 
     commands.spawn((

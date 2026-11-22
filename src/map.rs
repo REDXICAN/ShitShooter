@@ -43,12 +43,39 @@ pub struct Block {
     pub visible: bool,
 }
 
+/// Two kinds of pad, told apart by `launch`:
+/// - arrow pads (`launch` has a horizontal part) throw you that way, keeping
+///   only half the speed you came in with, so they land you somewhere precise;
+/// - plain pads (`launch` points straight up) only throw you up, keeping
+///   your speed and direction.
 pub struct JumpPad {
     /// Centre of the pad on the floor.
     pub center: Vec3,
     pub half_size: f32,
-    /// Velocity the player is launched with.
+    /// Velocity a player standing still is launched with.
     pub launch: Vec3,
+}
+
+impl JumpPad {
+    fn arrow(center: Vec3, launch: Vec3) -> JumpPad {
+        JumpPad { center, half_size: 1.0, launch }
+    }
+
+    fn plain(center: Vec3, lift: f32) -> JumpPad {
+        JumpPad { center, half_size: 1.0, launch: Vec3::Y * lift }
+    }
+
+    /// The horizontal direction an arrow pad pushes you in, or `None` for a plain pad.
+    pub fn direction(&self) -> Option<Vec3> {
+        let push = self.launch.with_y(0.0);
+        (push.length_squared() > 1e-6).then(|| push.normalize())
+    }
+
+    /// Velocity after touching the pad while moving at `vel`.
+    pub fn launch_velocity(&self, vel: Vec3) -> Vec3 {
+        let kept = if self.direction().is_some() { 0.5 } else { 1.0 };
+        Vec3::new(vel.x * kept + self.launch.x, self.launch.y, vel.z * kept + self.launch.z)
+    }
 }
 
 pub struct Spawn {
@@ -131,6 +158,10 @@ impl Map {
             add([s0, 0.0, t0], [s1, 1.25, t1], COVER);
 
             spawns.push(spawn_facing_center(Vec3::new(27.0 * sx, 2.5, 27.0 * sz)));
+
+            // Plain pad by the tower: run across it to hop onto the platform,
+            // or over the low cover.
+            pads.push(JumpPad::plain(Vec3::new(7.0 * sx, 0.0, 7.0 * sz), 14.0));
         }
 
         for (dx, dz) in CARDINALS {
@@ -149,17 +180,9 @@ impl Map {
             add([x0, 4.5, z0], [x1, 5.0, z1], LEDGE);
 
             // Inner pad: up onto the central tower.
-            pads.push(JumpPad {
-                center: dir * 8.5,
-                half_size: 1.0,
-                launch: -dir * 7.0 + Vec3::Y * 15.5,
-            });
+            pads.push(JumpPad::arrow(dir * 8.5, -dir * 7.0 + Vec3::Y * 15.5));
             // Outer pad: up onto the wall ledge.
-            pads.push(JumpPad {
-                center: dir * 24.0,
-                half_size: 1.0,
-                launch: dir * 6.5 + Vec3::Y * 17.0,
-            });
+            pads.push(JumpPad::arrow(dir * 24.0, dir * 6.5 + Vec3::Y * 17.0));
 
             spawns.push(spawn_facing_center(dir * 13.5 + side * 5.0));
         }
@@ -224,6 +247,9 @@ impl Map {
             // A wall that shields the corner spawn.
             add(28.0 * sx, 24.5 * sz, 2.5, 0.4, 0.0, 2.0, CONCRETE);
             spawns.push(spawn_facing_center(Vec3::new(28.5 * sx, 0.0, 28.5 * sz)));
+
+            // Plain pad beside the near container: run at it to land on top.
+            pads.push(JumpPad::plain(Vec3::new(16.5 * sx, 0.0, 8.0 * sz), 12.0));
         }
 
         for (dx, dz) in CARDINALS {
@@ -240,17 +266,9 @@ impl Map {
             add(c.x, c.z, half.x, half.z, 0.0, 1.3, BARRIER);
 
             // Inner pad: up onto the bunker roof.
-            pads.push(JumpPad {
-                center: dir * 9.5,
-                half_size: 1.0,
-                launch: -dir * 7.0 + Vec3::Y * 14.5,
-            });
+            pads.push(JumpPad::arrow(dir * 9.5, -dir * 7.0 + Vec3::Y * 14.5));
             // Outer pad: back over the long wall, into the fight.
-            pads.push(JumpPad {
-                center: dir * 27.0,
-                half_size: 1.0,
-                launch: -dir * 7.0 + Vec3::Y * 15.0,
-            });
+            pads.push(JumpPad::arrow(dir * 27.0, -dir * 7.0 + Vec3::Y * 15.0));
 
             spawns.push(spawn_facing_center(dir * 27.0 + side * 7.0));
         }
@@ -340,16 +358,13 @@ impl Map {
         bounced
     }
 
-    /// Returns the launch velocity of the jump pad at the player's `feet`, if any.
-    pub fn pad_at(&self, feet: Vec3) -> Option<Vec3> {
-        self.pads
-            .iter()
-            .find(|pad| {
-                (feet.x - pad.center.x).abs() < pad.half_size
-                    && (feet.z - pad.center.z).abs() < pad.half_size
-                    && (feet.y - pad.center.y).abs() < 0.3
-            })
-            .map(|pad| pad.launch)
+    /// Returns the jump pad at the player's `feet`, if any.
+    pub fn pad_at(&self, feet: Vec3) -> Option<&JumpPad> {
+        self.pads.iter().find(|pad| {
+            (feet.x - pad.center.x).abs() < pad.half_size
+                && (feet.z - pad.center.z).abs() < pad.half_size
+                && (feet.y - pad.center.y).abs() < 0.3
+        })
     }
 
     /// Distance along the ray to the closest block, if it is nearer than `max`.
@@ -491,7 +506,7 @@ mod tests {
     #[test]
     fn depot_pads_land_where_intended() {
         let map = Map::depot();
-        for pad in &map.pads {
+        for pad in map.pads.iter().filter(|pad| pad.direction().is_some()) {
             let mut pos = pad.center + Vec3::Y * PLAYER_HALF.y;
             let mut vel = pad.launch;
             let mut landed = false;
@@ -513,6 +528,24 @@ mod tests {
                 assert!(feet.abs() < 0.01 && from_center < 20.0, "landed at {pos:?}");
             }
         }
+    }
+
+    #[test]
+    fn every_map_has_both_kinds_of_pad() {
+        for map in maps() {
+            assert!(map.pads.iter().any(|pad| pad.direction().is_some()), "map {}", map.id);
+            assert!(map.pads.iter().any(|pad| pad.direction().is_none()), "map {}", map.id);
+        }
+    }
+
+    #[test]
+    fn plain_pads_keep_your_direction() {
+        let pad = JumpPad::plain(Vec3::ZERO, 14.0);
+        let vel = pad.launch_velocity(Vec3::new(9.0, -3.0, -4.0));
+        assert_eq!(vel, Vec3::new(9.0, 14.0, -4.0));
+        let arrow = JumpPad::arrow(Vec3::ZERO, Vec3::new(7.0, 15.0, 0.0));
+        assert_eq!(arrow.direction(), Some(Vec3::X));
+        assert_eq!(arrow.launch_velocity(Vec3::ZERO), arrow.launch);
     }
 
     #[test]

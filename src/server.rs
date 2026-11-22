@@ -817,8 +817,12 @@ impl Server {
             bot.vel.y -= 22.0 * dt;
             let wanted = Vec3::new(bot.vel.x, 0.0, bot.vel.z);
             let grounded = self.map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
-            if let Some(launch) = self.map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
-                bot.vel = launch;
+            if let Some(pad) = self.map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
+                // Bots aim with arrow pads from a standstill so they land where intended.
+                bot.vel = match pad.direction() {
+                    Some(_) => pad.launch,
+                    None => pad.launch_velocity(bot.vel),
+                };
             } else if grounded {
                 // Hop when blocked by something, and every now and then for fun.
                 let blocked = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() < wanted.length() * 0.5;

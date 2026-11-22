@@ -1559,7 +1559,7 @@ fn spawn_hud(mut commands: Commands) {
                                     children![
                                         section("Tips"),
                                         label("Strafe and turn in the air to build speed.", 14.0, DIM),
-                                        label("Green pads launch you.", 14.0, DIM),
+                                        label("Green pads launch you: arrows throw you their way, plain ones keep your momentum.", 14.0, DIM),
                                         label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
                                         label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
                                     ],
