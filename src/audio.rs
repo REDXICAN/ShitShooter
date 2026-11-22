@@ -69,6 +69,12 @@ pub enum Sound {
     /// A grenade knocking against something.
     Bounce,
     Explosion,
+    /// We took somebody's last armor.
+    ArmorBreak,
+    /// Somebody took our last armor.
+    ArmorBroken,
+    /// Armor picked up: ours, or heard from where somebody else took it.
+    ArmorPickup,
 }
 
 /// Ask for a sound to be played. `at: None` is our own sound (not spatial);
@@ -88,6 +94,8 @@ struct Sounds {
     explosion: Handle<AudioSource>,
     tick: Handle<AudioSource>,
     chime: Handle<AudioSource>,
+    shatter: Handle<AudioSource>,
+    charge: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
     rng: u32,
 }
@@ -106,6 +114,8 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         explosion: add(synth_explosion()),
         tick: add(synth_tick()),
         chime: add(synth_chime()),
+        shatter: add(synth_shatter()),
+        charge: add(synth_charge()),
         rng: 0x2545_f491,
     });
 }
@@ -138,6 +148,10 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Sound::Throw => (sounds.swish.clone(), 0.5, 0.95 + random * 0.1),
             Sound::Bounce => (sounds.clack.clone(), 0.8, 1.5 + random * 0.3),
             Sound::Explosion => (sounds.explosion.clone(), 1.0, 0.92 + random * 0.16),
+            Sound::ArmorBreak => (sounds.shatter.clone(), 0.75, 1.2 + random * 0.06),
+            // Played low and slow it sounds heavier: something of ours gave way.
+            Sound::ArmorBroken => (sounds.shatter.clone(), 1.0, 0.68),
+            Sound::ArmorPickup => (sounds.charge.clone(), if own { 0.6 } else { 1.0 }, 1.0),
         };
         let settings = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(volume))
@@ -299,6 +313,52 @@ fn synth_chime() -> Vec<f32> {
     })
 }
 
+/// Armor shattering: a sharp crack of bright noise, glassy shards ringing
+/// out one after another, and a dull thump as the plate gives way.
+fn synth_shatter() -> Vec<f32> {
+    let mut rng = 0x51ab_0001;
+    let mut low_passed = 0.0;
+    // (frequency, start, decay): inharmonic, so it rings like a shard, not a note.
+    const SHARDS: [(f32, f32, f32); 5] = [
+        (2350.0, 0.0, 22.0),
+        (3170.0, 0.012, 26.0),
+        (1720.0, 0.03, 18.0),
+        (4410.0, 0.045, 30.0),
+        (2890.0, 0.07, 24.0),
+    ];
+    samples(0.45, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.5;
+        // What the low pass took out: only the hiss.
+        let crack = (noise - low_passed) * (-t * 28.0).exp() * 1.6;
+        let ring: f32 = SHARDS
+            .iter()
+            .filter(|(_, start, _)| t >= *start)
+            .map(|(frequency, start, decay)| {
+                let since = t - start;
+                (TAU * frequency * since).sin() * (-since * decay).exp() * (since * 3000.0).min(1.0)
+            })
+            .sum();
+        let thump = (TAU * 140.0 * t).sin() * (-t * 25.0).exp();
+        (crack + ring * 0.4 + thump * 0.7).tanh() * (t * 2000.0).min(1.0) * 0.85
+    })
+}
+
+/// A rising, shimmering sweep: armor charging up.
+fn synth_charge() -> Vec<f32> {
+    const LENGTH: f32 = 0.32;
+    let mut phase = 0.0_f32;
+    samples(LENGTH, |t| {
+        let progress = t / LENGTH;
+        let frequency = 520.0 + 900.0 * progress;
+        phase += TAU * frequency / SAMPLE_RATE as f32;
+        let tone = phase.sin() + 0.4 * (phase * 1.5).sin() + 0.25 * (phase * 2.0).sin();
+        let shimmer = 0.75 + 0.25 * (TAU * 28.0 * t).sin();
+        let envelope = (t * 200.0).min(1.0) * (1.0 - progress).powf(1.5);
+        (tone * shimmer * envelope * 0.9).tanh() * 0.8
+    })
+}
+
 /// Two hard little knocks: a magazine latch, or a grenade hitting concrete.
 fn synth_clack() -> Vec<f32> {
     let mut rng = 0x0bad_cafe;
@@ -443,6 +503,8 @@ mod tests {
             synth_explosion(),
             synth_tick(),
             synth_chime(),
+            synth_shatter(),
+            synth_charge(),
         ];
         all.extend((0..4).map(synth_footstep));
         for sound in all {

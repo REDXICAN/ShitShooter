@@ -140,6 +140,7 @@ pub struct LocalPlayer {
     pub dash_cooldown: f32,
     pub alive: bool,
     pub health: i32,
+    pub armor: i32,
     pub spawn_seq: u32,
     pub guns: [GunSlot; 2],
     /// What is in hand: a gun slot (0 or 1) or `KNIFE_SLOT`.
@@ -191,6 +192,7 @@ impl Default for LocalPlayer {
             dash_cooldown: 0.0,
             alive: false,
             health: 0,
+            armor: 0,
             spawn_seq: 0,
             guns: [GunSlot::full(RIFLE), GunSlot::full(PISTOL)],
             slot: 0,
@@ -293,21 +295,25 @@ fn handle_net(
                     yaw: *yaw,
                     alive: true,
                     health: MAX_HEALTH,
+                    armor: START_ARMOR,
                     spawn_seq: *spawn_seq,
                     // Every life starts with the loadout picked in the menus.
                     guns: [GunSlot::full(settings.primary), GunSlot::full(settings.secondary)],
                     ..default()
                 };
             }
-            ServerMsg::Hit { victim, health, .. } if *victim == session.my_id => {
+            ServerMsg::Hit { victim, health, armor, .. } if *victim == session.my_id => {
                 player.health = *health;
+                player.armor = *armor;
                 player.damage_flash = 1.0;
             }
+            ServerMsg::ArmorPickup { id, armor, .. } if *id == session.my_id => player.armor = *armor,
             // Grenade damage is decided by the server, so this is where we learn of it.
             ServerMsg::Hit { attacker, .. } if *attacker == session.my_id => player.hit_marker = 0.15,
             ServerMsg::Kill { killer, victim, .. } if *victim == session.my_id => {
                 player.alive = false;
                 player.health = 0;
+                player.armor = 0;
                 player.killed_by = Some(session.name_of(*killer).to_string());
             }
             _ => {}

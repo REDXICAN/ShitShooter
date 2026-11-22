@@ -285,10 +285,11 @@ fn selftest_play(
     if test.reached(9, 9.6) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
-            "[selftest] pos {:.1?} top speed {:.1} health {} me {:?} ping {:.1}ms",
+            "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",
             player.pos,
             test.top_speed,
             player.health,
+            player.armor,
             me.map(|p| (p.kills, p.deaths)),
             connection.ping_ms()
         );
@@ -316,6 +317,7 @@ struct CueCount {
     throws: (u32, u32),
     bounces: (u32, u32),
     explosions: (u32, u32),
+    armor: (u32, u32),
 }
 
 fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut<CueCount>) {
@@ -331,6 +333,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
             Sound::Throw => &mut count.throws,
             Sound::Bounce => &mut count.bounces,
             Sound::Explosion => &mut count.explosions,
+            Sound::ArmorBreak | Sound::ArmorBroken | Sound::ArmorPickup => &mut count.armor,
         };
         if cue.at.is_none() {
             slot.0 += 1;

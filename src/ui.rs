@@ -56,6 +56,8 @@ const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
 const TEAM_COLORS: [Color; 2] = [Color::srgb(1.0, 0.42, 0.38), Color::srgb(0.42, 0.66, 1.0)];
 /// At or below this, health is shown in red and the bar pulses.
 const LOW_HEALTH: i32 = 30;
+/// Armor on the HUD, the same blue as the pickups.
+const ARMOR: Color = Color::srgb(0.40, 0.68, 1.0);
 
 pub struct UiPlugin;
 
@@ -1011,7 +1013,6 @@ enum Hud {
     /// The line under the clock: score limit, team, hill.
     Info,
     Ping,
-    Health,
     Speed,
     DashLabel,
     /// One line of the kill feed.
@@ -1039,6 +1040,7 @@ enum Bar {
     Health,
     /// Trails behind the health bar, showing what was just lost.
     HealthLag,
+    Armor,
     Dash,
     /// Rounds left in the magazine, or how far along the reload is.
     Ammo,
@@ -1116,11 +1118,6 @@ fn hud_shadow() -> TextShadow {
         offset: Vec2::splat(1.5),
         color: Color::srgba(0.0, 0.0, 0.0, 0.8),
     }
-}
-
-/// A small fixed caption.
-fn caption(text: &str) -> impl Bundle {
-    (label(text, 13.0, DIM), hud_shadow())
 }
 
 /// A dark see-through box with a faint edge.
@@ -1360,14 +1357,8 @@ fn spawn_hud(mut commands: Commands) {
                 ..default()
             }),
             children![
-                (
-                    Node {
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::SpaceBetween,
-                        ..default()
-                    },
-                    children![hud_text(40.0, TEXT, Hud::Health), caption("HEALTH")],
-                ),
+                // Armor on top: the bar is full at the most you can carry.
+                (bar_track(percent(100), 6.0), children![bar_fill(Bar::Armor, ARMOR)]),
                 (
                     bar_track(percent(100), 10.0),
                     children![
@@ -1562,6 +1553,7 @@ fn spawn_hud(mut commands: Commands) {
                                         label("Green pads launch you: arrows throw you their way, plain ones keep your momentum.", 14.0, DIM),
                                         label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
                                         label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
+                                        label(format!("Armor takes damage before health and never comes back by itself. You spawn with {START_ARMOR}; blue plates give {ARMOR_PICKUP} more, up to {MAX_ARMOR}."), 14.0, DIM),
                                     ],
                                 ),
                             ],
@@ -1689,7 +1681,6 @@ fn update_hud(
     let gun = player.guns.get(player.slot);
     let stats = player.weapon();
     let top = top_bar(&session);
-    let health = if player.alive { player.health.max(0) } else { 0 };
     // A notice fades out over its last half second.
     let notice = |notice: &Option<(String, f32)>, color: Color| match notice {
         Some((text, left)) => (text.clone(), color.with_alpha((left / 0.5).min(1.0))),
@@ -1714,10 +1705,6 @@ fn update_hud(
             Hud::Ping => (
                 format!("{:.0} ms", connection.as_ref().map_or(0.0, |c| c.ping_ms())),
                 DIM,
-            ),
-            Hud::Health => (
-                health.to_string(),
-                if health <= LOW_HEALTH { DANGER } else { TEXT },
             ),
             Hud::Speed => (format!("{:.1} m/s", player.horizontal_speed()), TEXT),
             Hud::DashLabel => (
@@ -1808,11 +1795,13 @@ fn update_hud_shapes(
         None => (0.0, TEXT),
     };
     let dash_part = 1.0 - player.dash_cooldown / DASH_COOLDOWN;
+    let armor_part = if player.alive { player.armor.max(0) as f32 / MAX_ARMOR as f32 } else { 0.0 };
 
     for (bar, mut node, mut background) in &mut bars {
         let (part, color) = match *bar {
             Bar::Health => (health_part, health_color),
             Bar::HealthLag => (*health_lag, Color::srgba(1.0, 1.0, 1.0, 0.75)),
+            Bar::Armor => (armor_part, ARMOR),
             Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
             Bar::Ammo => (ammo_part, ammo_color),
             Bar::Grenade(index) => {

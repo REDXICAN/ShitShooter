@@ -19,6 +19,14 @@ pub const REGEN_DELAY: f32 = 5.0;
 /// ...at this many points per second.
 pub const REGEN_RATE: f32 = 20.0;
 pub const RESPAWN_DELAY: f32 = 2.0;
+/// Armor soaks up damage before health does. Every life starts with
+/// `START_ARMOR`; pickups on the ground add `ARMOR_PICKUP`, up to `MAX_ARMOR`.
+/// Armor does not come back by itself.
+pub const START_ARMOR: i32 = 25;
+pub const MAX_ARMOR: i32 = 50;
+pub const ARMOR_PICKUP: i32 = 25;
+/// Seconds before a taken armor pickup is back.
+pub const ARMOR_RESPAWN: f32 = 20.0;
 pub const DEFAULT_FRAG_LIMIT: u32 = 20;
 pub const DEFAULT_MATCH_MINUTES: f32 = 10.0;
 pub const SNAPSHOT_RATE: f32 = 30.0;
@@ -81,7 +89,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-4:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-5:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -191,6 +199,15 @@ pub enum ServerMsg {
         victim: PlayerId,
         attacker: PlayerId,
         health: i32,
+        armor: i32,
+        /// This hit took the victim's last armor.
+        armor_broken: bool,
+    },
+    /// Somebody picked up the armor at `map.armor_spots[spot]`.
+    ArmorPickup {
+        id: PlayerId,
+        spot: u8,
+        armor: i32,
     },
     Kill {
         killer: PlayerId,
@@ -226,6 +243,7 @@ pub struct PlayerSnap {
     pub flags: u8,
     pub weapon: WeaponId,
     pub health: i32,
+    pub armor: i32,
     pub alive: bool,
 }
 
@@ -237,6 +255,8 @@ pub struct Snapshot {
     pub team_scores: [u32; 2],
     /// King of the hill: who holds the hill (`HILL_*`).
     pub hill: u8,
+    /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
+    pub armor_taken: u32,
     pub players: Vec<PlayerSnap>,
 }
 

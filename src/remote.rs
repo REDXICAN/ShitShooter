@@ -103,9 +103,12 @@ fn apply_snapshots(
 
     for snap in &snapshot.players {
         if snap.id == session.my_id {
-            // The server owns our health.
+            // The server owns our health and armor.
             if local.alive && local.health != snap.health {
                 local.health = snap.health;
+            }
+            if local.alive && local.armor != snap.armor {
+                local.armor = snap.armor;
             }
             continue;
         }

@@ -22,7 +22,7 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (build_map.run_if(resource_changed::<GameMap>), show_hill).chain(),
+                (build_map.run_if(resource_changed::<GameMap>), (show_hill, show_armor)).chain(),
             );
     }
 }
@@ -55,6 +55,10 @@ pub enum ViewModelPart {
     Magazine,
 }
 
+/// The plate floating over `map.armor_spots[index]`, shown while it is there to take.
+#[derive(Component)]
+struct ArmorPickup(usize);
+
 /// The glowing column that marks the hill in king of the hill.
 #[derive(Component)]
 struct HillZone;
@@ -72,6 +76,9 @@ pub struct SharedAssets {
     pub explosion: Handle<StandardMaterial>,
     pub grenade: Handle<StandardMaterial>,
     pad: Handle<StandardMaterial>,
+    armor: Handle<StandardMaterial>,
+    /// The faint mark under an armor pickup, there even while it is taken.
+    armor_base: Handle<StandardMaterial>,
     hill_mesh: Handle<Mesh>,
     /// Indexed by `Snapshot::hill`: empty, held by red, held by blue, contested.
     hill_materials: [Handle<StandardMaterial>; 4],
@@ -113,6 +120,8 @@ fn setup(
     let enemy_tracer = glowing(LinearRgba::rgb(12.0, 2.5, 1.5));
     let explosion = glowing(LinearRgba::rgb(30.0, 13.0, 3.0));
     let pad = glowing(LinearRgba::rgb(0.4, 5.0, 3.0));
+    let armor = glowing(LinearRgba::rgb(0.8, 2.6, 9.0));
+    let armor_base = glowing(LinearRgba::rgb(0.05, 0.25, 0.9));
     let grenade = materials.add(StandardMaterial {
         base_color: Color::srgb(0.16, 0.24, 0.12),
         emissive: LinearRgba::rgb(0.5, 0.06, 0.03),
@@ -201,6 +210,8 @@ fn setup(
         explosion,
         grenade,
         pad,
+        armor,
+        armor_base,
         dark,
         player_colors,
     });
@@ -236,6 +247,30 @@ fn show_hill(
         if material.0 != *holder {
             material.0 = holder.clone();
         }
+    }
+}
+
+/// Armor pickups spin and bob while they are there, and vanish while taken.
+fn show_armor(
+    time: Res<Time>,
+    session: Res<Session>,
+    map: Res<GameMap>,
+    mut pickups: Query<(&ArmorPickup, &mut Transform, &mut Visibility)>,
+) {
+    let t = time.elapsed_secs();
+    for (pickup, mut transform, mut visibility) in &mut pickups {
+        let taken = session.armor_taken & (1 << (pickup.0 % 32)) != 0;
+        let wanted = if taken { Visibility::Hidden } else { Visibility::Inherited };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+        let Some(spot) = map.0.armor_spots.get(pickup.0) else {
+            continue;
+        };
+        // Each one a little out of step with the others.
+        let phase = t * 2.0 + pickup.0 as f32;
+        transform.translation = *spot + Vec3::Y * (0.75 + 0.12 * phase.sin());
+        transform.rotation = Quat::from_rotation_y(t * 1.8 + pickup.0 as f32);
     }
 }
 
@@ -309,6 +344,37 @@ fn build_map(
                 ));
             }
         }
+    }
+
+    for (index, spot) in map.0.armor_spots.iter().enumerate() {
+        commands.spawn((
+            MapGeometry,
+            Mesh3d(assets.cube.clone()),
+            MeshMaterial3d(assets.armor_base.clone()),
+            Transform::from_translation(*spot + Vec3::Y * 0.02).with_scale(Vec3::new(1.1, 0.04, 1.1)),
+            NotShadowCaster,
+        ));
+        // A chest plate: a thick slab with a raised strip down the middle.
+        commands.spawn((
+            MapGeometry,
+            ArmorPickup(index),
+            Transform::from_translation(*spot + Vec3::Y * 0.75),
+            Visibility::Inherited,
+            children![
+                (
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(assets.armor.clone()),
+                    Transform::from_scale(Vec3::new(0.6, 0.7, 0.14)),
+                    NotShadowCaster,
+                ),
+                (
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(assets.dark.clone()),
+                    Transform::from_scale(Vec3::new(0.12, 0.72, 0.18)),
+                    NotShadowCaster,
+                ),
+            ],
+        ));
     }
 
     commands.spawn((

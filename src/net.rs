@@ -65,6 +65,8 @@ pub struct Session {
     pub team_scores: [u32; 2],
     /// Who holds the hill (`HILL_*`).
     pub hill: u8,
+    /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
+    pub armor_taken: u32,
     pub time_left: f32,
     /// Result line of the previous match, shown in the lobby.
     pub last_result: Option<String>,
@@ -284,6 +286,7 @@ fn update_session(
                 session.score_limit = *score_limit;
                 session.team_scores = [0, 0];
                 session.hill = HILL_EMPTY;
+                session.armor_taken = 0;
                 session.time_left = *time_left;
                 next_state.set(AppState::Playing);
             }
@@ -298,8 +301,11 @@ fn update_session(
                     ),
                     Winner::Nobody => "The last match ended without a winner.".to_string(),
                 });
+                session.armor_taken = 0;
                 next_state.set(AppState::Lobby);
             }
+            // Hidden at once; the next snapshot says the same.
+            ServerMsg::ArmorPickup { spot, .. } => session.armor_taken |= 1 << (*spot as u32 % 32),
             _ => {}
         }
     }
@@ -307,6 +313,7 @@ fn update_session(
         session.time_left = snapshot.time_left;
         session.team_scores = snapshot.team_scores;
         session.hill = snapshot.hill;
+        session.armor_taken = snapshot.armor_taken;
     }
 }
 

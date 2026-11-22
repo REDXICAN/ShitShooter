@@ -417,6 +417,7 @@ fn handle_net(
     mut commands: Commands,
     mut messages: MessageReader<NetMsg>,
     session: Res<Session>,
+    map: Res<GameMap>,
     assets: Option<Res<SharedAssets>>,
     mut feed: ResMut<KillFeed>,
     mut notices: ResMut<Notices>,
@@ -448,6 +449,37 @@ fn handle_net(
                         spawn_bullet(&mut commands, assets, *weapon_id, *shooter, origin, dir, offset, false);
                     }
                 }
+            }
+            // Armor breaking is loud on both ends: ours shatters with a heavy
+            // crunch, the one we break with a bright crack.
+            ServerMsg::Hit {
+                victim,
+                attacker,
+                armor_broken: true,
+                ..
+            } => {
+                let sound = if *victim == session.my_id {
+                    Sound::ArmorBroken
+                } else if *attacker == session.my_id {
+                    Sound::ArmorBreak
+                } else {
+                    continue;
+                };
+                sounds.write(SoundCue { sound, at: None });
+            }
+            ServerMsg::ArmorPickup { id, spot, .. } => {
+                let at = if *id == session.my_id {
+                    None
+                } else {
+                    let Some(spot) = map.0.armor_spots.get(*spot as usize) else {
+                        continue;
+                    };
+                    Some(*spot)
+                };
+                sounds.write(SoundCue {
+                    sound: Sound::ArmorPickup,
+                    at,
+                });
             }
             ServerMsg::Kill {
                 killer,

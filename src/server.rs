@@ -70,6 +70,7 @@ struct Player {
     join_order: u64,
     alive: bool,
     health: i32,
+    armor: i32,
     pos: Vec3,
     yaw: f32,
     pitch: f32,
@@ -136,6 +137,8 @@ pub struct Server {
     hill: u8,
     /// Time held that has not become a whole point yet.
     hill_clock: f32,
+    /// Seconds until each of the map's armor pickups is back; 0 = it is there.
+    armor_respawn: Vec<f32>,
 }
 
 impl Server {
@@ -163,6 +166,7 @@ impl Server {
             team_scores: [0, 0],
             hill: HILL_EMPTY,
             hill_clock: 0.0,
+            armor_respawn: Vec::new(),
             players: HashMap::new(),
             phase: Phase::Lobby,
             time_left: 0.0,
@@ -292,6 +296,7 @@ impl Server {
             }
         }
         self.update_bots(dt);
+        self.update_armor_pickups(dt);
         self.update_grenades(dt);
         if self.settings.mode == MODE_HILL && self.phase == Phase::Playing {
             self.update_hill(dt);
@@ -308,6 +313,12 @@ impl Server {
                 time_left: self.time_left.max(0.0),
                 team_scores: self.team_scores,
                 hill: self.hill,
+                armor_taken: self
+                    .armor_respawn
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, left)| **left > 0.0)
+                    .fold(0, |bits, (spot, _)| bits | 1 << spot),
                 players: self
                     .players
                     .iter()
@@ -319,6 +330,7 @@ impl Server {
                         flags: p.flags,
                         weapon: p.weapon,
                         health: p.health,
+                        armor: p.armor,
                         alive: p.alive,
                     })
                     .collect(),
@@ -343,6 +355,33 @@ impl Server {
                 }
             };
             self.end_match(winner);
+        }
+    }
+
+    /// Counts down the taken armor pickups, and hands out the ones that are
+    /// there to whoever walks into them with room for more.
+    fn update_armor_pickups(&mut self, dt: f32) {
+        for (spot, left) in self.armor_respawn.iter_mut().enumerate() {
+            if *left > 0.0 {
+                *left = (*left - dt).max(0.0);
+                continue;
+            }
+            let at = self.map.armor_spots[spot];
+            let taker = self.players.iter_mut().find(|(_, p)| {
+                let feet = p.pos - Vec3::Y * map::player_half(p.flags & FLAG_CROUCH != 0).y;
+                p.alive && p.armor < MAX_ARMOR && map::touches_pickup(feet, at)
+            });
+            let Some((id, player)) = taker else {
+                continue;
+            };
+            player.armor = (player.armor + ARMOR_PICKUP).min(MAX_ARMOR);
+            *left = ARMOR_RESPAWN;
+            let msg = ServerMsg::ArmorPickup {
+                id: *id,
+                spot: spot as u8,
+                armor: player.armor,
+            };
+            self.renet.broadcast_message(CH_RELIABLE, encode(&msg));
         }
     }
 
@@ -598,8 +637,10 @@ impl Server {
         }
         victim.since_damage = 0.0;
         victim.regen = 0.0;
-        victim.health = (victim.health - amount).max(0);
-        let health = victim.health;
+        let had_armor = victim.armor > 0;
+        (victim.health, victim.armor) = take_damage(victim.health, victim.armor, amount);
+        let (health, armor) = (victim.health, victim.armor);
+        let armor_broken = had_armor && armor == 0;
         if health == 0 {
             victim.alive = false;
             victim.deaths += 1;
@@ -609,6 +650,8 @@ impl Server {
             victim: victim_id,
             attacker: attacker_id,
             health,
+            armor,
+            armor_broken,
         });
         if health > 0 {
             return;
@@ -653,6 +696,7 @@ impl Server {
         self.team_scores = [0, 0];
         self.hill = HILL_EMPTY;
         self.hill_clock = 0.0;
+        self.armor_respawn = vec![0.0; self.map.armor_spots.len()];
         for player in self.players.values_mut() {
             player.kills = 0;
             player.deaths = 0;
@@ -737,6 +781,7 @@ impl Server {
         };
         player.alive = true;
         player.health = MAX_HEALTH;
+        player.armor = START_ARMOR;
         player.pos = pos;
         player.yaw = yaw;
         player.pitch = 0.0;
@@ -854,6 +899,7 @@ impl Server {
             join_order: self.join_counter,
             alive: false,
             health: 0,
+            armor: 0,
             pos: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
@@ -930,6 +976,13 @@ impl Drop for ServerHandle {
     }
 }
 
+/// `(health, armor)` after taking `amount` damage. Armor takes the hit first;
+/// whatever it cannot hold goes through to health.
+fn take_damage(health: i32, armor: i32, amount: i32) -> (i32, i32) {
+    let absorbed = amount.clamp(0, armor.max(0));
+    ((health - (amount - absorbed)).max(0), armor - absorbed)
+}
+
 /// xorshift64
 fn next_random(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -950,5 +1003,22 @@ fn sanitize_name(name: &str) -> String {
         "Player".to_string()
     } else {
         cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armor_soaks_damage_before_health() {
+        // All of it stopped by armor.
+        assert_eq!(take_damage(100, 25, 20), (100, 5));
+        // Armor breaks and the rest goes through.
+        assert_eq!(take_damage(100, 5, 20), (85, 0));
+        assert_eq!(take_damage(100, 25, 25), (100, 0));
+        // No armor: straight to health, never below zero.
+        assert_eq!(take_damage(40, 0, 20), (20, 0));
+        assert_eq!(take_damage(30, 10, 90), (0, 0));
     }
 }

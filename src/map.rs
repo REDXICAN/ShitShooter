@@ -91,6 +91,15 @@ pub struct Map {
     pub spawns: Vec<Spawn>,
     /// Centre of the zone to hold in king of the hill.
     pub hill: Vec3,
+    /// Where armor pickups lie, on top of the floor or block below them.
+    /// At most 32 (they are sent as a bit mask).
+    pub armor_spots: Vec<Vec3>,
+}
+
+/// True if a player with feet at `feet` is close enough to grab the pickup
+/// lying at `spot`.
+pub fn touches_pickup(feet: Vec3, spot: Vec3) -> bool {
+    (feet - spot).with_y(0.0).length() < 1.2 && (-0.5..1.5).contains(&(feet.y - spot.y))
 }
 
 const FLOOR: [f32; 3] = [0.20, 0.22, 0.26];
@@ -187,12 +196,17 @@ impl Map {
             spawns.push(spawn_facing_center(dir * 13.5 + side * 5.0));
         }
 
+        // Armor: on top of the tower, and out on each wall ledge.
+        let mut armor_spots = vec![Vec3::new(0.0, 4.0, 0.0)];
+        armor_spots.extend(CARDINALS.map(|(dx, dz)| Vec3::new(dx, 0.0, dz) * 29.75 + Vec3::Y * 5.0));
+
         Map {
             id: 0,
             hill: Vec3::ZERO,
             blocks,
             pads,
             spawns,
+            armor_spots,
         }
     }
 
@@ -273,12 +287,17 @@ impl Map {
             spawns.push(spawn_facing_center(dir * 27.0 + side * 7.0));
         }
 
+        // Armor: on the bunker roof, and on top of each stacked pair of crates.
+        let mut armor_spots = vec![Vec3::new(0.0, 3.4, 0.0)];
+        armor_spots.extend(QUADRANTS.map(|(sx, sz)| Vec3::new(18.0 * sx, 2.4, 14.5 * sz)));
+
         Map {
             id: 1,
             hill: Vec3::ZERO,
             blocks,
             pads,
             spawns,
+            armor_spots,
         }
     }
 
@@ -469,6 +488,19 @@ mod tests {
 
     fn maps() -> Vec<Map> {
         (0..MAP_NAMES.len() as u8).map(Map::by_id).collect()
+    }
+
+    #[test]
+    fn armor_lies_on_something_a_player_can_stand_in() {
+        for map in maps() {
+            assert!(!map.armor_spots.is_empty() && map.armor_spots.len() <= 32, "map {}", map.id);
+            for spot in &map.armor_spots {
+                let standing = *spot + Vec3::Y * (PLAYER_HALF.y + 0.01);
+                assert!(map.is_free(standing, PLAYER_HALF), "map {} armor at {spot} is inside a block", map.id);
+                assert!(!map.is_free(*spot - Vec3::Y * 0.05, Vec3::splat(0.04)), "map {} armor at {spot} floats", map.id);
+                assert!(touches_pickup(*spot, *spot));
+            }
+        }
     }
 
     #[test]
