@@ -13,14 +13,14 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use bevy::math::Vec3;
+use bevy::math::{EulerRot, Quat, Vec2, Vec3};
 use renet::{ConnectionConfig, RenetServer, ServerEvent};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
     protocol::*,
-    weapons::{self, KNIFE, KNIFE_RANGE, WEAPONS, WeaponId, hit_damage, weapon},
+    weapons::{self, DRAW_TIME, GUN_COUNT, KNIFE, KNIFE_RANGE, WEAPONS, WeaponId, hit_damage, weapon},
 };
 
 const TICK: Duration = Duration::from_micros(1_000_000 / 60);
@@ -55,11 +55,94 @@ impl Default for ServerSettings {
     }
 }
 
+// How well bots fight. They see enemies in front of them, or close by, or
+// whoever just hurt them; take a moment to react; turn at a human-ish rate;
+// and their aim wobbles, more so right after they find a target.
+/// Bots notice enemies within this angle either side of where they look
+/// (cosine of the angle)...
+const BOT_VIEW_COS: f32 = 0.26;
+/// ...or anywhere this close.
+const BOT_HEARING: f32 = 6.0;
+const BOT_SIGHT_RANGE: f32 = 70.0;
+/// Seconds an enemy must be in sight before the first shot.
+const BOT_REACTION: f32 = 0.25;
+/// Radians per second.
+const BOT_TURN_RATE: f32 = 7.0;
+/// Radius of the aim wobble, in radians, once settled on a target.
+const BOT_AIM_ERROR: f32 = 0.015;
+/// Seconds it takes the wobble to settle down to `BOT_AIM_ERROR`.
+const BOT_AIM_SETTLE: f32 = 1.5;
+/// Seconds a bot stays turned towards whoever hurt it.
+const BOT_GRUDGE: f32 = 3.0;
+/// Bullets vanish after this many seconds, as they do on the clients.
+const BULLET_LIFETIME: f32 = 1.5;
+
 struct Bot {
     vel: Vec3,
-    target: Vec3,
+    /// Where it is running to.
+    goal: Vec3,
     retarget_in: f32,
+    /// The gun it carries this life, with its magazine.
+    gun: WeaponId,
+    ammo: u32,
+    /// Seconds of reloading left; 0 when not reloading.
+    reload: f32,
+    /// Seconds until it may fire again.
+    cooldown: f32,
+    /// Shots left in the current burst (automatic guns).
+    burst: u32,
+    /// The enemy it is fighting, and for how long it has had them in sight.
+    enemy: Option<PlayerId>,
+    sight: f32,
+    /// How far off its aim is (yaw, pitch), re-rolled every `wobble_in` seconds.
+    aim_error: Vec2,
+    wobble_in: f32,
+    /// Whoever hurt it last, and for how much longer it cares.
+    provoked_by: Option<PlayerId>,
+    provoked_for: f32,
 }
+
+impl Bot {
+    fn new() -> Bot {
+        Bot {
+            vel: Vec3::ZERO,
+            goal: Vec3::ZERO,
+            retarget_in: 0.0,
+            gun: 0,
+            ammo: 0,
+            reload: 0.0,
+            cooldown: 0.0,
+            burst: 0,
+            enemy: None,
+            sight: 0.0,
+            aim_error: Vec2::ZERO,
+            wobble_in: 0.0,
+            provoked_by: None,
+            provoked_for: 0.0,
+        }
+    }
+}
+
+/// A bullet fired by a bot. People's bullets are flown by their own clients;
+/// bots have none, so the server flies theirs.
+struct BotBullet {
+    shooter: PlayerId,
+    team: u8,
+    weapon: WeaponId,
+    pos: Vec3,
+    vel: Vec3,
+    age: f32,
+}
+
+/// What a bot needs to know about everyone else this tick.
+struct Body {
+    id: PlayerId,
+    team: u8,
+    center: Vec3,
+}
+
+/// A bot's shot: shooter, team, weapon, origin and one direction per bullet.
+type BotShot = (PlayerId, u8, WeaponId, Vec3, Vec<Vec3>);
 
 struct Player {
     name: String,
@@ -128,6 +211,7 @@ pub struct Server {
     roster_dirty: bool,
     rng: u64,
     grenades: Vec<Grenade>,
+    bullets: Vec<BotBullet>,
     next_grenade_id: u32,
     /// Time not yet consumed by whole grenade steps.
     grenade_clock: f32,
@@ -161,6 +245,7 @@ impl Server {
             transport,
             map: Map::by_id(settings.map),
             grenades: Vec::new(),
+            bullets: Vec::new(),
             next_grenade_id: 0,
             grenade_clock: 0.0,
             team_scores: [0, 0],
@@ -296,6 +381,11 @@ impl Server {
             }
         }
         self.update_bots(dt);
+        self.update_bullets(dt);
+        if self.phase != Phase::Playing {
+            // A bot's bullet won the match.
+            return;
+        }
         self.update_armor_pickups(dt);
         self.update_grenades(dt);
         if self.settings.mode == MODE_HILL && self.phase == Phase::Playing {
@@ -637,6 +727,12 @@ impl Server {
         }
         victim.since_damage = 0.0;
         victim.regen = 0.0;
+        if let Some(bot) = &mut victim.bot
+            && attacker_id != victim_id
+        {
+            bot.provoked_by = Some(attacker_id);
+            bot.provoked_for = BOT_GRUDGE;
+        }
         let had_armor = victim.armor > 0;
         (victim.health, victim.armor) = take_damage(victim.health, victim.armor, amount);
         let (health, armor) = (victim.health, victim.armor);
@@ -693,6 +789,7 @@ impl Server {
         self.phase = Phase::Playing;
         self.time_left = self.settings.match_minutes * 60.0;
         self.grenades.clear();
+        self.bullets.clear();
         self.team_scores = [0, 0];
         self.hill = HILL_EMPTY;
         self.hill_clock = 0.0;
@@ -738,6 +835,7 @@ impl Server {
         println!("[server] match ended");
         self.phase = Phase::Lobby;
         self.grenades.clear();
+        self.bullets.clear();
         for player in self.players.values_mut() {
             player.alive = false;
         }
@@ -775,6 +873,7 @@ impl Server {
         let pick = self.random() as usize % ranked.len().min(3);
         let spawn = &self.map.spawns[ranked[pick].1];
         let (pos, yaw) = (spawn.pos, spawn.yaw);
+        let bot_gun = (self.random() % GUN_COUNT as u64) as WeaponId;
 
         let Some(player) = self.players.get_mut(&id) else {
             return;
@@ -792,8 +891,12 @@ impl Server {
         player.spawn_seq += 1;
         let spawn_seq = player.spawn_seq;
         if let Some(bot) = &mut player.bot {
-            bot.vel = Vec3::ZERO;
-            bot.retarget_in = 0.0;
+            // A fresh bot with a random gun, ready once it is drawn.
+            *bot = Bot::new();
+            bot.gun = bot_gun;
+            bot.ammo = weapon(bot_gun).magazine;
+            bot.cooldown = DRAW_TIME;
+            player.weapon = bot_gun;
         }
         self.broadcast(&ServerMsg::Spawn {
             id,
@@ -810,13 +913,8 @@ impl Server {
         let id = self.next_bot_id;
         self.next_bot_id += 1;
         let name = format!("[bot] {}", BOT_NAMES[(id as usize - 1) % BOT_NAMES.len()]);
-        let bot = Bot {
-            vel: Vec3::ZERO,
-            target: Vec3::ZERO,
-            retarget_in: 0.0,
-        };
         self.join_counter += 1;
-        let player = self.new_player(name, Some(bot));
+        let player = self.new_player(name, Some(Bot::new()));
         self.players.insert(id, player);
         self.roster_dirty = true;
         if self.phase == Phase::Playing {
@@ -827,59 +925,107 @@ impl Server {
         }
     }
 
-    /// Bots are moving targets: they run between random points and hop around,
-    /// using the same collision code as real players. They do not shoot back.
+    /// Bots run between random points and hop around, using the same
+    /// collision code as real players, and shoot at the enemies they see.
     fn update_bots(&mut self, dt: f32) {
-        const BOT_SPEED: f32 = 7.0;
-        let mut rng = self.rng;
+        let team_mode = is_team_mode(self.settings.mode);
         let hill = (self.settings.mode == MODE_HILL).then_some(self.map.hill);
-        for player in self.players.values_mut() {
-            let Some(bot) = &mut player.bot else {
-                continue;
-            };
+        let bodies: Vec<Body> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.alive)
+            .map(|(id, p)| Body {
+                id: *id,
+                team: p.team,
+                center: p.pos,
+            })
+            .collect();
+        let mut rng = self.rng;
+        let mut shots = Vec::new();
+        for (id, player) in self.players.iter_mut() {
             if !player.alive {
                 continue;
             }
-            bot.retarget_in -= dt;
-            let mut to_target = bot.target - player.pos;
-            to_target.y = 0.0;
-            if bot.retarget_in <= 0.0 || to_target.length() < 1.5 {
-                let x = (next_random(&mut rng) % 5600) as f32 / 100.0 - 28.0;
-                let z = (next_random(&mut rng) % 5600) as f32 / 100.0 - 28.0;
-                bot.target = match hill {
-                    // On the hill half the time, so there is something to fight over.
-                    Some(hill) if next_random(&mut rng) % 2 == 0 => hill + Vec3::new(x, 0.0, z) * 0.2,
-                    _ => Vec3::new(x, 0.0, z),
-                };
-                bot.retarget_in = 2.0 + (next_random(&mut rng) % 300) as f32 / 100.0;
-                to_target = bot.target - player.pos;
-                to_target.y = 0.0;
+            let Some(mut bot) = player.bot.take() else {
+                continue;
+            };
+            let enemy = bot_pick_enemy(&self.map, *id, player, &mut bot, &bodies, team_mode, dt);
+            bot_move(&self.map, player, &mut bot, hill, enemy, &mut rng, dt);
+            if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, &mut rng, dt) {
+                shots.push(shot);
             }
-            let wish = to_target.normalize_or_zero() * BOT_SPEED;
-            let blend = (8.0 * dt).min(1.0);
-            bot.vel.x += (wish.x - bot.vel.x) * blend;
-            bot.vel.z += (wish.z - bot.vel.z) * blend;
-            bot.vel.y -= 22.0 * dt;
-            let wanted = Vec3::new(bot.vel.x, 0.0, bot.vel.z);
-            let grounded = self.map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
-            if let Some(pad) = self.map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
-                // Bots aim with arrow pads from a standstill so they land where intended.
-                bot.vel = match pad.direction() {
-                    Some(_) => pad.launch,
-                    None => pad.launch_velocity(bot.vel),
-                };
-            } else if grounded {
-                // Hop when blocked by something, and every now and then for fun.
-                let blocked = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() < wanted.length() * 0.5;
-                if blocked || next_random(&mut rng) % 90 == 0 {
-                    bot.vel.y = 8.0;
-                }
-            }
-            if wish.length_squared() > 0.01 {
-                player.yaw = (-wish.x).atan2(-wish.z);
-            }
+            player.bot = Some(bot);
         }
         self.rng = rng;
+
+        // Everyone sees and hears a bot's shot like anybody else's.
+        for (shooter, team, weapon_id, origin, dirs) in shots {
+            let speed = weapon(weapon_id).speed;
+            self.bullets.extend(dirs.iter().map(|dir| BotBullet {
+                shooter,
+                team,
+                weapon: weapon_id,
+                pos: origin,
+                vel: *dir * speed,
+                age: 0.0,
+            }));
+            self.broadcast(&ServerMsg::Fire {
+                shooter,
+                weapon: weapon_id,
+                origin: origin.to_array(),
+                dirs: dirs.iter().map(|dir| dir.to_array()).collect(),
+            });
+        }
+    }
+
+    /// Flies the bots' bullets the way the clients fly theirs: each stops at
+    /// the first wall or enemy in its way, and hurts the enemy.
+    fn update_bullets(&mut self, dt: f32) {
+        let team_mode = is_team_mode(self.settings.mode);
+        let (map, players) = (&self.map, &self.players);
+        let mut hits = Vec::new();
+        self.bullets.retain_mut(|bullet| {
+            let step = bullet.vel * dt;
+            let distance = step.length();
+            if distance > 0.0 {
+                let dir = step / distance;
+                let wall = map.raycast(bullet.pos, dir, distance);
+                let mut reach = wall.unwrap_or(distance);
+                let mut victim = None;
+                // Bullets pass through the shooter's own team.
+                for (id, player) in players {
+                    if !player.alive || *id == bullet.shooter || (team_mode && player.team == bullet.team) {
+                        continue;
+                    }
+                    let crouching = player.flags & FLAG_CROUCH != 0;
+                    let half = map::hitbox_half(crouching);
+                    if let Some(t) = map::ray_box(bullet.pos, dir, player.pos - half, player.pos + half)
+                        && t < reach
+                    {
+                        reach = t;
+                        let (head_min, head_max) = map::head_box(player.pos, crouching);
+                        victim = Some((*id, map::ray_box(bullet.pos, dir, head_min, head_max).is_some()));
+                    }
+                }
+                if let Some((victim, headshot)) = victim {
+                    hits.push((victim, bullet.shooter, bullet.weapon, headshot));
+                    return false;
+                }
+                if wall.is_some() {
+                    return false;
+                }
+            }
+            bullet.pos += step;
+            bullet.vel.y -= weapon(bullet.weapon).gravity * dt;
+            bullet.age += dt;
+            bullet.age <= BULLET_LIFETIME
+        });
+        for (victim, shooter, weapon_id, headshot) in hits {
+            // A kill can end the match, and then nobody else gets hurt.
+            if self.phase == Phase::Playing {
+                self.damage(victim, shooter, hit_damage(weapon_id, headshot), weapon_id);
+            }
+        }
     }
 
     fn new_player(&self, name: String, bot: Option<Bot>) -> Player {
@@ -976,6 +1122,206 @@ impl Drop for ServerHandle {
     }
 }
 
+/// Where a bot's eyes are (bots never crouch).
+fn bot_eye(player: &Player) -> Vec3 {
+    player.pos + Vec3::Y * (map::STAND_EYE - map::PLAYER_HALF.y)
+}
+
+/// The point a bot aims at on a body: the upper chest.
+fn aim_point(center: Vec3) -> Vec3 {
+    center + Vec3::Y * 0.25
+}
+
+/// Decides whom the bot fights, if anybody: the enemy it is already fighting
+/// while it can still see them, otherwise the nearest one it notices.
+/// Returns where that enemy is.
+fn bot_pick_enemy(
+    map: &Map,
+    id: PlayerId,
+    player: &Player,
+    bot: &mut Bot,
+    bodies: &[Body],
+    team_mode: bool,
+    dt: f32,
+) -> Option<Vec3> {
+    bot.provoked_for -= dt;
+    if bot.provoked_for <= 0.0 {
+        bot.provoked_by = None;
+    }
+    let eye = bot_eye(player);
+    let facing = map::look_dir(player.yaw, 0.0);
+    let mut current = None;
+    let mut nearest: Option<(f32, &Body)> = None;
+    for body in bodies {
+        let to = aim_point(body.center);
+        let in_sight = body.id != id
+            && !(team_mode && body.team == player.team)
+            && eye.distance(to) < BOT_SIGHT_RANGE
+            && (map.line_of_sight(eye, to) || map.line_of_sight(eye, to + Vec3::Y * 0.5));
+        if !in_sight {
+            continue;
+        }
+        if Some(body.id) == bot.enemy {
+            current = Some(body);
+        }
+        let offset = (body.center - player.pos).with_y(0.0);
+        let distance = offset.length();
+        let noticed = distance < BOT_HEARING
+            || bot.provoked_by == Some(body.id)
+            || offset.dot(facing) > BOT_VIEW_COS * distance;
+        if noticed && nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, body));
+        }
+    }
+    let Some(target) = current.or(nearest.map(|(_, body)| body)) else {
+        bot.enemy = None;
+        bot.sight = 0.0;
+        return None;
+    };
+    if bot.enemy == Some(target.id) {
+        bot.sight += dt;
+    } else {
+        // A new enemy: take a moment to react, and dodge sideways right away.
+        bot.enemy = Some(target.id);
+        bot.sight = 0.0;
+        bot.retarget_in = 0.0;
+    }
+    Some(target.center)
+}
+
+/// Runs towards the bot's goal, hopping over whatever is in the way. While
+/// fighting, the goals are short dashes from side to side.
+fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, enemy: Option<Vec3>, rng: &mut u64, dt: f32) {
+    let speed = if enemy.is_some() { 5.5 } else { 7.0 };
+    bot.retarget_in -= dt;
+    let mut to_goal = (bot.goal - player.pos).with_y(0.0);
+    if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 {
+        if let Some(enemy) = enemy {
+            let towards = (enemy - player.pos).with_y(0.0).normalize_or_zero();
+            let side = Vec3::new(-towards.z, 0.0, towards.x);
+            let sign = if next_random(rng).is_multiple_of(2) { 1.0 } else { -1.0 };
+            bot.goal = player.pos + side * sign * (3.0 + random_unit(rng) * 4.0);
+            bot.retarget_in = 0.6 + random_unit(rng);
+        } else {
+            let x = random_unit(rng) * 56.0 - 28.0;
+            let z = random_unit(rng) * 56.0 - 28.0;
+            bot.goal = match hill {
+                // On the hill half the time, so there is something to fight over.
+                Some(hill) if next_random(rng).is_multiple_of(2) => hill + Vec3::new(x, 0.0, z) * 0.2,
+                _ => Vec3::new(x, 0.0, z),
+            };
+            bot.retarget_in = 2.0 + random_unit(rng) * 3.0;
+        }
+        to_goal = (bot.goal - player.pos).with_y(0.0);
+    }
+    let wish = to_goal.normalize_or_zero() * speed;
+    let blend = (8.0 * dt).min(1.0);
+    bot.vel.x += (wish.x - bot.vel.x) * blend;
+    bot.vel.z += (wish.z - bot.vel.z) * blend;
+    bot.vel.y -= 22.0 * dt;
+    let wanted = Vec3::new(bot.vel.x, 0.0, bot.vel.z);
+    let grounded = map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
+    if let Some(pad) = map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
+        // Bots aim with arrow pads from a standstill so they land where intended.
+        bot.vel = match pad.direction() {
+            Some(_) => pad.launch,
+            None => pad.launch_velocity(bot.vel),
+        };
+    } else if grounded {
+        // Hop when blocked by something, and every now and then for fun.
+        let blocked = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() < wanted.length() * 0.5;
+        if blocked || next_random(rng).is_multiple_of(90) {
+            bot.vel.y = 8.0;
+        }
+    }
+    // Not fighting: look where it is going.
+    if enemy.is_none() {
+        if wish.length_squared() > 0.01 {
+            player.yaw = turn_towards(player.yaw, (-wish.x).atan2(-wish.z), BOT_TURN_RATE * 2.0 * dt);
+        }
+        player.pitch = turn_towards(player.pitch, 0.0, BOT_TURN_RATE * dt);
+    }
+}
+
+/// Reloads, turns the bot towards its enemy, and fires once it is lined up.
+fn bot_fight(id: PlayerId, player: &mut Player, bot: &mut Bot, enemy: Option<Vec3>, rng: &mut u64, dt: f32) -> Option<BotShot> {
+    let stats = weapon(bot.gun);
+    bot.cooldown = (bot.cooldown - dt).max(0.0);
+    if bot.reload > 0.0 {
+        bot.reload -= dt;
+        if bot.reload <= 0.0 {
+            bot.reload = 0.0;
+            bot.ammo = stats.magazine;
+        }
+    } else if bot.ammo == 0 || (enemy.is_none() && bot.ammo < stats.magazine) {
+        // Empty, or a quiet moment to top up.
+        bot.reload = stats.reload;
+    }
+    player.weapon = bot.gun;
+    player.flags = if bot.reload > 0.0 { FLAG_RELOAD } else { 0 };
+    let enemy = enemy?;
+
+    // The aim wobbles around the target: widely at first, then less.
+    bot.wobble_in -= dt;
+    if bot.wobble_in <= 0.0 {
+        bot.wobble_in = 0.25 + random_unit(rng) * 0.25;
+        let unsettled = 1.0 + 1.5 * (1.0 - bot.sight / BOT_AIM_SETTLE).max(0.0);
+        let radius = BOT_AIM_ERROR * unsettled * random_unit(rng).sqrt();
+        let around = random_unit(rng) * std::f32::consts::TAU;
+        bot.aim_error = Vec2::new(around.cos(), around.sin()) * radius;
+    }
+    let eye = bot_eye(player);
+    let to = aim_point(enemy) - eye;
+    let yaw = (-to.x).atan2(-to.z) + bot.aim_error.x;
+    let pitch = to.y.atan2(to.with_y(0.0).length()) + bot.aim_error.y;
+    player.yaw = turn_towards(player.yaw, yaw, BOT_TURN_RATE * dt);
+    player.pitch = turn_towards(player.pitch, pitch, BOT_TURN_RATE * dt);
+    let lined_up = angle_between(player.yaw, yaw).abs() < 0.1 && (player.pitch - pitch).abs() < 0.1;
+    if !lined_up || bot.sight < BOT_REACTION || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
+        return None;
+    }
+
+    bot.ammo -= 1;
+    bot.cooldown = stats.interval;
+    if stats.auto {
+        // Automatic guns go in bursts.
+        if bot.burst == 0 {
+            bot.burst = 3 + (next_random(rng) % 5) as u32;
+        }
+        bot.burst -= 1;
+        if bot.burst == 0 {
+            bot.cooldown += 0.3 + random_unit(rng) * 0.4;
+        }
+    } else {
+        // Nobody clicks at exactly the fire rate.
+        bot.cooldown += 0.1 + random_unit(rng) * 0.25;
+    }
+    // Every bullet goes to a random point inside the spread cone, like people's.
+    let rotation = Quat::from_euler(EulerRot::YXZ, player.yaw, player.pitch, 0.0);
+    let cone = (stats.hip_spread + stats.aim_spread) / 2.0;
+    let dirs = (0..stats.pellets)
+        .map(|_| {
+            let off_axis = cone * random_unit(rng).sqrt();
+            let around = random_unit(rng) * std::f32::consts::TAU;
+            (rotation * Vec3::new(off_axis * around.cos(), off_axis * around.sin(), -1.0)).normalize()
+        })
+        .collect();
+    Some((id, player.team, bot.gun, eye, dirs))
+}
+
+/// `angle - from`, wrapped to -π..π.
+fn angle_between(from: f32, angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    (angle - from + PI).rem_euclid(TAU) - PI
+}
+
+/// Turns `current` towards `wanted` by at most `max` radians, the short way round.
+fn turn_towards(current: f32, wanted: f32, max: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let turned = current + angle_between(current, wanted).clamp(-max, max);
+    (turned + PI).rem_euclid(TAU) - PI
+}
+
 /// `(health, armor)` after taking `amount` damage. Armor takes the hit first;
 /// whatever it cannot hold goes through to health.
 fn take_damage(health: i32, armor: i32, amount: i32) -> (i32, i32) {
@@ -989,6 +1335,11 @@ fn next_random(state: &mut u64) -> u64 {
     *state ^= *state >> 7;
     *state ^= *state << 17;
     *state >> 11
+}
+
+/// A random number in 0..1.
+fn random_unit(state: &mut u64) -> f32 {
+    (next_random(state) % (1 << 24)) as f32 / (1 << 24) as f32
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -1009,6 +1360,71 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bots_fight_each_other() {
+        let settings = ServerSettings {
+            port: 0,
+            bots: 4,
+            ..ServerSettings::default()
+        };
+        let mut server = Server::bind(settings).unwrap();
+        server.start_match();
+        // A minute of play.
+        for _ in 0..60 * 60 {
+            server.update_match(1.0 / 60.0);
+            if server.phase != Phase::Playing {
+                break;
+            }
+        }
+        let kills: u32 = server.players.values().map(|p| p.kills).sum();
+        assert!(kills > 0, "bots never killed anybody");
+    }
+
+    #[test]
+    fn bots_shoot_a_person_standing_in_front_of_them() {
+        let settings = ServerSettings {
+            port: 0,
+            bots: 1,
+            ..ServerSettings::default()
+        };
+        let mut server = Server::bind(settings).unwrap();
+        server.join_counter += 1;
+        let human = server.new_player("Target".into(), None);
+        server.players.insert(1000, human);
+        server.start_match();
+        let bot = server.players.iter().find(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).unwrap();
+        // A spawn point with open ground 12 m in some direction.
+        let (bot_pos, target_pos) = server
+            .map
+            .spawns
+            .iter()
+            .flat_map(|spawn| {
+                (0..16).map(|step| {
+                    let yaw = step as f32 * std::f32::consts::TAU / 16.0;
+                    (spawn.pos, spawn.pos + map::look_dir(yaw, 0.0) * 12.0)
+                })
+            })
+            .find(|(from, to)| {
+                let eye = from.with_y(from.y + 0.7);
+                server.map.is_free(*to, map::PLAYER_HALF)
+                    && server.map.line_of_sight(eye, aim_point(*to))
+                    && server.map.line_of_sight(eye, *to - Vec3::Y * 0.5)
+            })
+            .expect("no open line on the map");
+        let to = target_pos - bot_pos;
+        server.players.get_mut(&bot).unwrap().yaw = (-to.x).atan2(-to.z);
+        let mut hurt = false;
+        for _ in 0..60 * 5 {
+            // Both stay put: the bot may turn and shoot but not walk away.
+            server.players.get_mut(&bot).unwrap().pos = bot_pos;
+            server.players.get_mut(&1000).unwrap().pos = target_pos;
+            server.update_match(1.0 / 60.0);
+            let target = &server.players[&1000];
+            hurt |= target.armor < START_ARMOR || target.deaths > 0;
+        }
+        assert!(hurt, "the bot never hit the person in front of it");
+    }
 
     #[test]
     fn armor_soaks_damage_before_health() {

@@ -76,7 +76,7 @@ OPTIONS:
     --mode <NAME>        Game mode: ffa, teams or hill    [default: ffa]
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
-    --bots <N>           Start with N target-practice bots
+    --bots <N>           Start with N bots
     --map <NAME>         Map to start on: arena or depot  [default: arena]
     --help               Show this text
 ";
