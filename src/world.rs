@@ -1,12 +1,13 @@
 //! The static scene: map geometry, lighting, the camera and shared assets.
 
-use bevy::{light::NotShadowCaster, prelude::*};
+use bevy::{light::NotShadowCaster, prelude::*, render::render_resource::Face};
 
 use crate::{
     grenade::{HeldGrenade, HeldGrenadeModel, held_grenade_transform},
     map::Map,
     net::Session,
-    protocol::{GRENADE_KINDS, HILL_RADIUS, MODE_HILL, PLAYER_COLOR_COUNT},
+    protocol::{GRENADE_KINDS, HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, MODE_HILL},
+    ui::{ALLY, ENEMY},
 };
 
 pub struct WorldPlugin;
@@ -68,8 +69,6 @@ struct HillZone;
 #[derive(Resource)]
 pub struct SharedAssets {
     pub cube: Handle<Mesh>,
-    /// A player's torso and legs: 1.3 m tall.
-    pub body: Handle<Mesh>,
     /// A sphere 1 m across; scale it to size.
     pub sphere: Handle<Mesh>,
     pub tracer: Handle<StandardMaterial>,
@@ -84,26 +83,12 @@ pub struct SharedAssets {
     /// The faint mark under an armor pickup, there even while it is taken.
     armor_base: Handle<StandardMaterial>,
     hill_mesh: Handle<Mesh>,
-    /// Indexed by `Snapshot::hill`: empty, held by red, held by blue, contested.
+    /// Empty, held by our team, held by the enemy, contested.
     hill_materials: [Handle<StandardMaterial>; 4],
     pub dark: Handle<StandardMaterial>,
-    pub player_colors: Vec<Handle<StandardMaterial>>,
-}
-
-pub const PLAYER_COLORS: [[f32; 3]; PLAYER_COLOR_COUNT as usize] = [
-    [0.95, 0.25, 0.25],
-    [0.25, 0.60, 1.00],
-    [0.30, 0.90, 0.35],
-    [1.00, 0.80, 0.15],
-    [0.85, 0.35, 0.95],
-    [0.15, 0.90, 0.85],
-    [1.00, 0.50, 0.10],
-    [0.95, 0.95, 0.95],
-];
-
-pub fn player_color(index: u8) -> Color {
-    let [r, g, b] = PLAYER_COLORS[index as usize % PLAYER_COLORS.len()];
-    Color::srgb(r, g, b)
+    /// The outline around teammates: drawn on the inside of a copy of the
+    /// model a little larger than it, so only a rim shows around the edge.
+    pub ally_outline: Handle<StandardMaterial>,
 }
 
 /// The grenade models, indexed by `GrenadeKind`. Made by `art/grenades.py`.
@@ -147,15 +132,12 @@ fn setup(
         perceptual_roughness: 0.5,
         ..default()
     });
-    let player_colors = (0..PLAYER_COLOR_COUNT)
-        .map(|index| {
-            materials.add(StandardMaterial {
-                base_color: player_color(index),
-                perceptual_roughness: 0.6,
-                ..default()
-            })
-        })
-        .collect();
+    let ally_outline = materials.add(StandardMaterial {
+        base_color: ALLY,
+        unlit: true,
+        cull_mode: Some(Face::Front),
+        ..default()
+    });
 
     commands.spawn((
         DirectionalLight {
@@ -207,14 +189,14 @@ fn setup(
     ));
 
     let hill_materials = [
-        [0.9, 0.9, 0.9, 0.04],
-        [1.0, 0.2, 0.15, 0.11],
-        [0.2, 0.45, 1.0, 0.11],
-        [1.0, 0.8, 0.1, 0.11],
+        Color::srgba(0.9, 0.9, 0.9, 0.04),
+        ALLY.with_alpha(0.11),
+        ENEMY.with_alpha(0.11),
+        Color::srgba(1.0, 0.8, 0.1, 0.11),
     ]
-    .map(|[r, g, b, a]| {
+    .map(|color| {
         materials.add(StandardMaterial {
-            base_color: Color::srgba(r, g, b, a),
+            base_color: color,
             alpha_mode: AlphaMode::Blend,
             unlit: true,
             // Visible from the inside too.
@@ -227,7 +209,6 @@ fn setup(
     commands.insert_resource(SharedAssets {
         hill_mesh: meshes.add(Cylinder::new(HILL_RADIUS, HILL_HEIGHT)),
         hill_materials,
-        body: meshes.add(Capsule3d::new(0.34, 0.62)),
         sphere: sphere.clone(),
         cube,
         tracer,
@@ -239,7 +220,7 @@ fn setup(
         armor,
         armor_base,
         dark,
-        player_colors,
+        ally_outline,
     });
 }
 
@@ -254,7 +235,8 @@ fn gun_part(part: ViewModelPart, cube: &Handle<Mesh>, material: &Handle<Standard
     )
 }
 
-/// The hill's column is shown in king of the hill, in the colour of whoever holds it.
+/// The hill's column is shown in king of the hill, in the colour of whoever
+/// holds it: us or the enemy.
 fn show_hill(
     session: Res<Session>,
     assets: Res<SharedAssets>,
@@ -269,7 +251,13 @@ fn show_hill(
         if *visibility != wanted {
             *visibility = wanted;
         }
-        let holder = &assets.hill_materials[session.hill as usize % 4];
+        let shade = match session.hill {
+            HILL_EMPTY => 0,
+            HILL_CONTESTED => 3,
+            held if held - HILL_HELD == session.team_of(session.my_id) => 1,
+            _ => 2,
+        };
+        let holder = &assets.hill_materials[shade];
         if material.0 != *holder {
             material.0 = holder.clone();
         }

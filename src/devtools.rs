@@ -5,12 +5,15 @@ use std::{path::PathBuf, time::SystemTime};
 
 use bevy::{
     prelude::*,
+    ui_widgets::{SetSliderValue, Slider, SliderValueChange},
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 
 use crate::{
     AppState, LaunchArgs,
     net::{Connection, MenuStatus, Session},
+    paint::{MyPaint, PlayerModel},
+    paint_editor::PaintEditor,
     player::{Controls, LocalPlayer, PlayerSystems},
     protocol::ClientMsg,
     remote::RemotePlayer,
@@ -124,6 +127,10 @@ fn selftest_lobby(
     mut test: ResMut<SelfTest>,
     mut connection: ResMut<Connection>,
     mut exit: MessageWriter<AppExit>,
+    mut paint: ResMut<MyPaint>,
+    mut editor: ResMut<PaintEditor>,
+    model: Res<PlayerModel>,
+    sliders: Query<Entity, With<Slider>>,
 ) {
     test.clock += time.delta_secs();
     // The second visit to the lobby is after the match was ended: we are done.
@@ -147,7 +154,35 @@ fn selftest_lobby(
     if test.reached(1, 1.5) {
         test.capture(&mut commands, "lobby.png");
     }
-    if test.reached(2, 2.5) {
+    // Stripes on the paint job, and a look at them on the paint screen.
+    if test.reached(2, 2.0) {
+        let mut canvas = paint.canvas.clone();
+        for (pixel, texel) in canvas.0.iter_mut().zip(&model.texels) {
+            if let Some((point, _)) = texel
+                && (point.y * 6.0).floor() as i32 % 2 == 0
+            {
+                *pixel = 1;
+            }
+        }
+        paint.set(canvas);
+        editor.open = true;
+    }
+    // The brush size slider (the only slider there is) moved to 12 cm.
+    if test.reached(3, 2.5) {
+        for entity in &sliders {
+            commands.trigger(SetSliderValue {
+                entity,
+                change: SliderValueChange::Absolute(12.0),
+            });
+        }
+    }
+    if test.reached(4, 3.0) {
+        test.capture(&mut commands, "paint.png");
+    }
+    if test.reached(5, 3.3) {
+        editor.open = false;
+    }
+    if test.reached(6, 3.8) {
         println!("[selftest] roster: {:?}", session.roster.iter().map(|p| &p.name).collect::<Vec<_>>());
         connection.send(&ClientMsg::StartMatch);
     }
@@ -171,6 +206,7 @@ fn selftest_play(
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut marker_captured: Local<bool>,
     mut countdown_captured: Local<bool>,
+    mut ally_captured: Local<bool>,
 ) {
     // The script starts once the countdown is over.
     if session.frozen() {
@@ -178,6 +214,25 @@ fn selftest_play(
             *countdown_captured = true;
             println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
             test.capture(&mut commands, "countdown.png");
+        }
+        // In the team modes, a look at the nearest teammate: outlined, named.
+        let eye = player.eye();
+        let mate = remotes
+            .iter()
+            .filter(|(remote, _)| remote.alive && session.team_mode() && !session.enemies(session.my_id, remote.id))
+            .map(|(_, transform)| transform.translation)
+            .min_by(|a, b| a.distance(eye).total_cmp(&b.distance(eye)));
+        if let Some(mate) = mate
+            && session.countdown < 1.8
+        {
+            let to = mate - eye;
+            player.yaw = (-to.x).atan2(-to.z);
+            player.pitch = to.y.atan2(to.with_y(0.0).length());
+            if session.countdown < 1.2 && !*ally_captured {
+                *ally_captured = true;
+                println!("[selftest] nearest teammate {:.1} m away", to.length());
+                test.capture(&mut commands, "teammate.png");
+            }
         }
         return;
     }

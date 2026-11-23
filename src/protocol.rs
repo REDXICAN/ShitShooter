@@ -45,7 +45,6 @@ pub const MODE_TEAMS: u8 = 1;
 /// the zone in the middle of the map.
 pub const MODE_HILL: u8 = 2;
 pub const MODE_NAMES: [&str; 3] = ["Free for all", "Team deathmatch", "King of the hill"];
-pub const TEAM_NAMES: [&str; 2] = ["Red", "Blue"];
 /// The hill is everything within this distance of the map's hill point,
 /// measured along the ground (so any height counts).
 pub const HILL_RADIUS: f32 = 7.0;
@@ -152,7 +151,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-8:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-9:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -163,6 +162,8 @@ pub fn protocol_id(password: &str) -> u64 {
 pub struct PlayerInfo {
     pub id: PlayerId,
     pub name: String,
+    /// Index into `paint::PALETTE`: the colour of their plain coat, worn
+    /// until their paint job arrives (bots always wear it).
     pub color: u8,
     /// 0 or 1. Only means something in the team modes.
     pub team: u8,
@@ -178,6 +179,9 @@ pub enum ClientMsg {
     /// The grenade we want to carry, from our next spawn on. Sent after
     /// `Hello` and whenever it is changed.
     Loadout { grenade: GrenadeKind },
+    /// What we look like: a `paint::Canvas`, encoded. Sent after `Hello` and
+    /// whenever it is changed; the server passes it on to everyone.
+    Paint { paint: Vec<u8> },
     /// Lobby leader only.
     StartMatch,
     /// Lobby leader only.
@@ -321,6 +325,12 @@ pub enum ServerMsg {
         from: PlayerId,
         target: Option<PlayerId>,
         pos: [f32; 3],
+    },
+    /// What player `id` looks like (see `ClientMsg::Paint`). A newcomer is
+    /// sent everyone's after the roster.
+    Paint {
+        id: PlayerId,
+        paint: Vec<u8>,
     },
 }
 

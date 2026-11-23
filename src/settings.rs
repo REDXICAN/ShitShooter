@@ -530,7 +530,7 @@ fn gun_named(name: &str) -> Option<WeaponId> {
 
 /// `%APPDATA%\ShitShooter\settings.txt` (the same for every copy of the exe, so
 /// a new build keeps your settings), or next to the exe if that is not available.
-fn settings_path() -> Option<PathBuf> {
+pub fn settings_path() -> Option<PathBuf> {
     let config_dir = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else {

@@ -15,6 +15,8 @@ mod grenade;
 mod gun_model;
 mod map;
 mod net;
+mod paint;
+mod paint_editor;
 mod ping;
 mod player;
 mod protocol;
@@ -194,6 +196,8 @@ fn main() {
             combat::CombatPlugin,
             grenade::GrenadePlugin,
             ping::PingPlugin,
+            paint::PaintPlugin,
+            paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,

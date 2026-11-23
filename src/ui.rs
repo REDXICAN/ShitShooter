@@ -20,12 +20,14 @@ use crate::{
     gun_model::FittedModels,
     map::MAP_NAMES,
     net::{self, Connection, MenuStatus, Session},
+    paint::{Skins, palette_color},
+    paint_editor::on_open_paint,
     player::{Controls, DASH_COOLDOWN, LocalPlayer},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
     weapons::{KNIFE, sight, takes_sights, weapon},
-    world::{GameMap, player_color},
+    world::GameMap,
 };
 
 const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
@@ -55,7 +57,10 @@ const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
 const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 /// The empty part of a bar.
 const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
-const TEAM_COLORS: [Color; 2] = [Color::srgb(1.0, 0.42, 0.38), Color::srgb(0.42, 0.66, 1.0)];
+/// Our team, wherever it shows: the outline around teammates, their names,
+/// our score. Everybody else is the enemy.
+pub const ALLY: Color = Color::srgb(0.30, 0.86, 1.0);
+pub const ENEMY: Color = Color::srgb(1.0, 0.42, 0.38);
 /// At or below this, health is shown in red and the bar pulses.
 const LOW_HEALTH: i32 = 30;
 /// Armor on the HUD, the same blue as the pickups.
@@ -159,7 +164,7 @@ impl ButtonKind {
 }
 
 /// The box of a button, without its text.
-fn button_box(kind: ButtonKind, small: bool) -> impl Bundle {
+pub fn button_box(kind: ButtonKind, small: bool) -> impl Bundle {
     let (across, down) = if small { (10, 4) } else { (18, 9) };
     (
         Button,
@@ -428,6 +433,7 @@ fn spawn_menu(mut commands: Commands, prefs: Res<MenuPrefs>) {
                     (
                         button_row(),
                         children![
+                            (button("Paint yourself"), observe(on_open_paint)),
                             (button("Settings"), observe(on_open_settings)),
                             (danger_button("Quit"), observe(on_quit)),
                         ],
@@ -621,7 +627,10 @@ struct RosterKey {
     my_id: PlayerId,
     leader: PlayerId,
     team_mode: bool,
+    my_team: u8,
     team_scores: [u32; 2],
+    /// The dot beside each name, in roster order: their main paint colour.
+    colors: Vec<u8>,
 }
 
 const ROSTER_WIDTH: f32 = 430.0;
@@ -674,17 +683,12 @@ fn roster_heading(title: String, color: Color) -> impl Bundle {
     )
 }
 
-fn roster_row(player: &PlayerInfo, key: &RosterKey) -> impl Bundle {
+fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundle {
     let me = player.id == key.my_id;
     let (name, tag) = match player.name.strip_prefix("[bot] ") {
         Some(name) if player.is_bot => (name, "BOT"),
         _ if player.id == key.leader => (player.name.as_str(), "HOST"),
         _ => (player.name.as_str(), ""),
-    };
-    let swatch = if key.team_mode {
-        TEAM_COLORS[player.team as usize & 1]
-    } else {
-        player_color(player.color)
     };
     (
         roster_row_node(),
@@ -714,18 +718,33 @@ fn roster_row(player: &PlayerInfo, key: &RosterKey) -> impl Bundle {
 
 /// Rebuilds the rows of every player list whose players or scores changed.
 /// Best score first; one group per team in the team modes.
-fn update_rosters(mut commands: Commands, session: Res<Session>, mut lists: Query<(Entity, &mut RosterList)>) {
+fn update_rosters(
+    mut commands: Commands,
+    session: Res<Session>,
+    skins: Res<Skins>,
+    my_paint: Option<Res<crate::paint::MyPaint>>,
+    mut lists: Query<(Entity, &mut RosterList)>,
+) {
     if lists.is_empty() {
         return;
     }
     let mut roster = session.roster.clone();
     roster.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+    let colors = roster
+        .iter()
+        .map(|player| match &my_paint {
+            Some(mine) if player.id == session.my_id => mine.canvas.main_color(),
+            _ => skins.main_color(player.id).unwrap_or(player.color),
+        })
+        .collect();
     let key = RosterKey {
         roster,
         my_id: session.my_id,
         leader: session.leader,
         team_mode: session.team_mode(),
+        my_team: session.team_of(session.my_id),
         team_scores: session.team_scores,
+        colors,
     };
     for (entity, mut list) in &mut lists {
         if list.shown.as_ref() == Some(&key) {
@@ -741,18 +760,19 @@ fn update_rosters(mut commands: Commands, session: Res<Session>, mut lists: Quer
             if !key.team_mode {
                 groups.spawn(column()).with_children(|rows| {
                     rows.spawn(roster_heading("PLAYER".into(), DIM));
-                    for player in &key.roster {
-                        rows.spawn(roster_row(player, &key));
+                    for (player, color) in key.roster.iter().zip(&key.colors) {
+                        rows.spawn(roster_row(player, palette_color(*color), &key));
                     }
                 });
                 return;
             }
-            for team in 0..2usize {
+            // Our team first.
+            for (team, title, color) in [(key.my_team, "YOUR TEAM", ALLY), (key.my_team ^ 1, "ENEMY TEAM", ENEMY)] {
                 groups.spawn(column()).with_children(|rows| {
-                    let title = format!("{} TEAM  -  {}", TEAM_NAMES[team].to_uppercase(), key.team_scores[team]);
-                    rows.spawn(roster_heading(title, TEAM_COLORS[team]));
-                    for player in key.roster.iter().filter(|player| player.team as usize & 1 == team) {
-                        rows.spawn(roster_row(player, &key));
+                    let title = format!("{title}  -  {}", key.team_scores[team as usize & 1]);
+                    rows.spawn(roster_heading(title, color));
+                    for player in key.roster.iter().filter(|player| player.team & 1 == team) {
+                        rows.spawn(roster_row(player, color, &key));
                     }
                 });
             }
@@ -1001,6 +1021,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                 button_row(),
                 children![
                     (primary_button("Start match"), LeaderOnly, observe(send_on_click(ClientMsg::StartMatch))),
+                    (button("Paint yourself"), observe(on_open_paint)),
                     (button("Settings"), observe(on_open_settings)),
                     (danger_button("Leave"), observe(on_leave)),
                 ],
@@ -1795,23 +1816,20 @@ fn top_bar(session: &Session) -> TopBar {
             info: format!("first to {}   |   {lead}", session.score_limit),
         };
     }
-    let mut info = format!(
-        "first to {}   |   you are {}",
-        session.score_limit,
-        TEAM_NAMES[session.team_of(session.my_id) as usize].to_uppercase()
-    );
+    let mine = session.team_of(session.my_id) as usize;
+    let mut info = format!("first to {}", session.score_limit);
     if session.mode == MODE_HILL {
         info.push_str(match session.hill {
             HILL_EMPTY => "   |   hill: empty",
             HILL_CONTESTED => "   |   hill: CONTESTED",
-            held if held == HILL_HELD => "   |   hill: RED",
-            _ => "   |   hill: BLUE",
+            held if (held - HILL_HELD) as usize == mine => "   |   hill: YOURS",
+            _ => "   |   hill: ENEMY",
         });
     }
     TopBar {
-        labels: TEAM_NAMES.map(|name| name.to_uppercase()),
-        scores: session.team_scores.map(|score| score as u32),
-        colors: TEAM_COLORS,
+        labels: ["YOUR TEAM".to_string(), "ENEMY".to_string()],
+        scores: [session.team_scores[mine], session.team_scores[mine ^ 1]],
+        colors: [ALLY, ENEMY],
         info,
     }
 }

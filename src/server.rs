@@ -19,6 +19,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
+    paint::Canvas,
     protocol::*,
     weapons::{self, DRAW_TIME, GUN_COUNT, IRON_SIGHTS, KNIFE, KNIFE_RANGE, SightId, WEAPONS, WeaponId, hit_damage, weapon},
 };
@@ -187,6 +188,8 @@ struct Player {
     loadout_grenade: GrenadeKind,
     /// Seconds left on the fuse of the frag with its pin pulled, if any.
     cooking: Option<f32>,
+    /// Their paint job, encoded, once they have sent one.
+    paint: Option<Vec<u8>>,
     bot: Option<Bot>,
 }
 
@@ -566,6 +569,17 @@ impl Server {
                 // Roster first, so the newcomer knows everyone before any spawn arrives.
                 let roster = self.roster_msg();
                 self.broadcast(&roster);
+                let paints: Vec<ServerMsg> = self
+                    .players
+                    .iter()
+                    .filter_map(|(other, p)| {
+                        let paint = p.paint.clone()?;
+                        Some(ServerMsg::Paint { id: *other, paint })
+                    })
+                    .collect();
+                for paint in &paints {
+                    self.send(id, paint);
+                }
                 if self.phase == Phase::Playing {
                     self.send(
                         id,
@@ -582,6 +596,16 @@ impl Server {
                 if let Some(player) = self.players.get_mut(&id) {
                     player.loadout_grenade = grenade % GRENADE_KINDS as GrenadeKind;
                 }
+            }
+            ClientMsg::Paint { paint } => {
+                let Some(player) = self.players.get_mut(&id) else {
+                    return;
+                };
+                if Canvas::decode(&paint).is_none() || player.paint.as_ref() == Some(&paint) {
+                    return;
+                }
+                player.paint = Some(paint.clone());
+                self.broadcast(&ServerMsg::Paint { id, paint });
             }
             ClientMsg::StartMatch if is_leader && self.phase == Phase::Lobby => self.start_match(),
             ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => self.end_match(Winner::Nobody),
@@ -1282,6 +1306,7 @@ impl Server {
             grenades: 0.0,
             loadout_grenade: FRAG,
             cooking: None,
+            paint: None,
             bot,
         }
     }
@@ -1801,6 +1826,26 @@ mod tests {
         }
         assert_eq!(server.teammates_of(1000), vec![1001]);
         assert_eq!(server.teammates_of(1002), Vec::<PlayerId>::new());
+    }
+
+    #[test]
+    fn only_paint_jobs_that_read_back_are_kept() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        server.join_counter += 1;
+        let person = server.new_player("Painter".into(), None);
+        server.players.insert(1000, person);
+        let good = Canvas::solid(4).encode();
+        server.handle_message(1000, ClientMsg::Paint { paint: good.clone() });
+        assert_eq!(server.players[&1000].paint.as_ref(), Some(&good));
+        server.handle_message(1000, ClientMsg::Paint { paint: vec![1, 2, 3] });
+        assert_eq!(server.players[&1000].paint.as_ref(), Some(&good), "a broken paint job replaced a good one");
+        // Nobody who has not said hello can paint.
+        server.handle_message(1001, ClientMsg::Paint { paint: good });
+        assert!(!server.players.contains_key(&1001));
     }
 
     #[test]

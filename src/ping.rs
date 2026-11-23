@@ -197,6 +197,19 @@ fn screen_point(camera: &Transform, fov: f32, size: Vec2, world: Vec3) -> Vec2 {
     center + if over > 1.0 { offset / over } else { offset }
 }
 
+/// Where on the screen (logical pixels, y down) a point in the world is, if
+/// it is on the screen at all.
+pub fn on_screen(camera: &Transform, fov: f32, size: Vec2, world: Vec3) -> Option<Vec2> {
+    let local = camera.rotation.inverse() * (world - camera.translation);
+    if local.z > -0.05 {
+        return None;
+    }
+    let half_height = (fov / 2.0).tan();
+    let half_width = half_height * size.x / size.y.max(1.0);
+    let at = Vec2::new(local.x / -local.z / half_width, -local.y / -local.z / half_height);
+    (at.abs().max_element() <= 1.0).then(|| (at + Vec2::ONE) * size / 2.0)
+}
+
 fn draw_markers(
     mut commands: Commands,
     session: Res<Session>,

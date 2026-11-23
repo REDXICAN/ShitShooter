@@ -2,30 +2,29 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use bevy::prelude::*;
+use bevy::{light::NotShadowCaster, prelude::*, window::PrimaryWindow};
 
 use crate::{
     AppState,
     map::{CROUCH_HALF, PLAYER_HALF},
     net::{NetMsg, Session, SnapshotMsg},
-    player::LocalPlayer,
+    paint::{BODY_HEIGHT, BODY_RADIUS, BODY_Y, HEAD_RADIUS, HEAD_Y, NECK, PlayerModel, Skins},
+    player::{LocalPlayer, PlayerSystems},
     gun_model::{FittedModels, GunHolder, GunModelSystems},
     protocol::*,
+    ui::ALLY,
     weapons::{SightId, WeaponId, weapon},
-    world::SharedAssets,
+    world::{MainCamera, SharedAssets},
 };
 
 /// Remote players are drawn this far in the past, so there are always two
 /// snapshots to blend between (snapshots arrive every ~33 ms).
 const INTERP_DELAY: f64 = 0.075;
 
-// The model, measured from the centre of the standing collision box (feet at
-// -0.9, top of the head at +0.9). Crouching squashes the body and lowers the head.
-const BODY_HEIGHT: f32 = 1.3;
-const HEAD_RADIUS: f32 = 0.25;
-/// The head sinks a little into the shoulders.
-const NECK: f32 = HEAD_RADIUS * 0.8;
-const HEAD_Y: f32 = BODY_HEIGHT - PLAYER_HALF.y + NECK;
+/// How far the outline around a teammate stands out from them.
+const OUTLINE: f32 = 0.035;
+/// A teammate's name floats this far above the middle of their box.
+const TAG_HEIGHT: f32 = 1.3;
 
 pub struct RemotePlugin;
 
@@ -42,8 +41,13 @@ impl Plugin for RemotePlugin {
             )
             .add_systems(
                 Update,
-                size_gun_boxes
-                    .after(GunModelSystems::Show)
+                (
+                    size_gun_boxes.after(GunModelSystems::Show),
+                    (show_outlines, draw_ally_tags)
+                        .chain()
+                        .after(RemoteSystems)
+                        .after(PlayerSystems::Camera),
+                )
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -91,6 +95,15 @@ struct Gun;
 #[derive(Component)]
 struct GunBox;
 
+/// The rim drawn around a teammate (see `SharedAssets::ally_outline`), one
+/// on the body and one on the head. Shown only when they are on our team.
+#[derive(Component)]
+struct AllyOutline(PlayerId);
+
+/// A teammate's name over their head, seen through walls.
+#[derive(Component)]
+struct AllyTag(PlayerId);
+
 #[derive(Resource, Default)]
 struct RemoteIndex(HashMap<PlayerId, Entity>);
 
@@ -104,6 +117,10 @@ fn apply_snapshots(
     time: Res<Time<Real>>,
     session: Res<Session>,
     assets: Res<SharedAssets>,
+    model: Res<PlayerModel>,
+    mut skins: ResMut<Skins>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut index: ResMut<RemoteIndex>,
     mut local: ResMut<LocalPlayer>,
     mut remotes: Query<(&mut RemotePlayer, &mut Visibility)>,
@@ -159,9 +176,24 @@ fn apply_snapshots(
         } else if !index.0.contains_key(&snap.id)
             && let Some(info) = session.roster.iter().find(|p| p.id == snap.id)
         {
-            // Team colours in the team modes (the first two are red and blue).
-            let color = if session.team_mode() { info.team & 1 } else { info.color };
-            let material = assets.player_colors[color as usize % assets.player_colors.len()].clone();
+            // Their paint job (or a plain coat until it arrives).
+            let material = skins.material(snap.id, info.color, &model, &mut images, &mut materials);
+            // The outline sits OUTLINE outside the surface all round.
+            let body_outline = Vec3::new(
+                (BODY_RADIUS + OUTLINE) / BODY_RADIUS,
+                (BODY_HEIGHT / 2.0 + OUTLINE) / (BODY_HEIGHT / 2.0),
+                (BODY_RADIUS + OUTLINE) / BODY_RADIUS,
+            );
+            let outline = |mesh: &Handle<Mesh>, scale: Vec3| {
+                (
+                    AllyOutline(snap.id),
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(assets.ally_outline.clone()),
+                    Transform::from_scale(scale),
+                    NotShadowCaster,
+                    Visibility::Hidden,
+                )
+            };
             let entity = commands
                 .spawn((
                     RemotePlayer {
@@ -186,9 +218,10 @@ fn apply_snapshots(
                     children![
                         (
                             Body,
-                            Mesh3d(assets.body.clone()),
+                            Mesh3d(model.body.clone()),
                             MeshMaterial3d(material.clone()),
-                            Transform::from_xyz(0.0, BODY_HEIGHT / 2.0 - PLAYER_HALF.y, 0.0),
+                            Transform::from_xyz(0.0, BODY_Y, 0.0),
+                            children![outline(&model.body, body_outline)],
                         ),
                         (
                             HeadPivot,
@@ -196,9 +229,12 @@ fn apply_snapshots(
                             Visibility::default(),
                             children![
                                 (
-                                    Mesh3d(assets.sphere.clone()),
+                                    Mesh3d(model.head.clone()),
                                     MeshMaterial3d(material),
-                                    Transform::from_scale(Vec3::splat(HEAD_RADIUS * 2.0)),
+                                    children![outline(
+                                        &model.head,
+                                        Vec3::splat((HEAD_RADIUS + OUTLINE) / HEAD_RADIUS)
+                                    )],
                                 ),
                                 // Visor: shows which way they are facing.
                                 (
@@ -330,6 +366,103 @@ fn interpolate(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Teammates get an outline; nobody else does.
+fn show_outlines(session: Res<Session>, mut outlines: Query<(&AllyOutline, &mut Visibility)>) {
+    for (outline, mut visibility) in &mut outlines {
+        let ally = session.team_mode() && !session.enemies(session.my_id, outline.0);
+        visibility.set_if_neq(if ally {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
+}
+
+/// Puts every living teammate's name over their head, through walls.
+fn draw_ally_tags(
+    mut commands: Commands,
+    session: Res<Session>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<(&Transform, &Projection), With<MainCamera>>,
+    remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
+    mut tags: Query<(Entity, &AllyTag, &mut Node, &mut Visibility)>,
+) {
+    const WIDTH: f32 = 200.0;
+    let (camera, projection) = camera.into_inner();
+    let fov = match projection {
+        Projection::Perspective(perspective) => perspective.fov,
+        _ => 1.0,
+    };
+    let size = Vec2::new(window.width(), window.height());
+
+    let mut shown = Vec::new();
+    for (remote, transform) in &remotes {
+        if !remote.alive || !session.team_mode() || session.enemies(session.my_id, remote.id) {
+            continue;
+        }
+        let above = transform.translation + Vec3::Y * TAG_HEIGHT;
+        let Some(at) = crate::ping::on_screen(camera, fov, size, above) else {
+            continue;
+        };
+        shown.push(remote.id);
+        let (left, top) = (px(at.x - WIDTH / 2.0), px(at.y - 20.0));
+        if let Some((_, _, mut node, mut visibility)) = tags.iter_mut().find(|(_, tag, ..)| tag.0 == remote.id) {
+            if node.left != left || node.top != top {
+                node.left = left;
+                node.top = top;
+            }
+            visibility.set_if_neq(Visibility::Inherited);
+            continue;
+        }
+        let name = session.name_of(remote.id).trim_start_matches("[bot] ").to_string();
+        commands.spawn((
+            AllyTag(remote.id),
+            Node {
+                position_type: PositionType::Absolute,
+                left,
+                top,
+                width: px(WIDTH),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: px(3),
+                ..default()
+            },
+            Pickable::IGNORE,
+            DespawnOnExit(AppState::Playing),
+            children![
+                (
+                    crate::ui::label(name, 14.0, ALLY),
+                    TextLayout::justify(Justify::Center),
+                    TextShadow {
+                        offset: Vec2::splat(1.5),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.8),
+                    },
+                ),
+                // A small diamond just over their head.
+                (
+                    Node {
+                        width: px(7),
+                        height: px(7),
+                        ..default()
+                    },
+                    UiTransform::from_rotation(Rot2::degrees(45.0)),
+                    BackgroundColor(ALLY.with_alpha(0.8)),
+                ),
+            ],
+        ));
+    }
+    for (entity, tag, _, mut visibility) in &mut tags {
+        if shown.contains(&tag.0) {
+            continue;
+        }
+        if session.roster.iter().any(|p| p.id == tag.0) {
+            visibility.set_if_neq(Visibility::Hidden);
+        } else {
+            commands.entity(entity).despawn();
         }
     }
 }

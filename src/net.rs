@@ -14,6 +14,7 @@ use crate::{
     AppState,
     audio::{Sound, SoundCue},
     map::Map,
+    paint::MyPaint,
     protocol::*,
     server::{Server, ServerHandle, ServerSettings},
     settings::Settings,
@@ -30,7 +31,7 @@ impl Plugin for NetPlugin {
             .add_message::<SnapshotMsg>()
             .add_systems(
                 PreUpdate,
-                (receive, send_loadout, update_session)
+                (receive, send_loadout, send_paint, update_session)
                     .chain()
                     .run_if(resource_exists::<Connection>),
             )
@@ -120,6 +121,8 @@ pub struct Connection {
     said_hello: bool,
     /// The grenade the server was last told we carry.
     loadout_sent: Option<GrenadeKind>,
+    /// The `MyPaint::version` the server was last sent.
+    paint_sent: Option<u32>,
 }
 
 impl Connection {
@@ -143,6 +146,7 @@ impl Connection {
             name: name.to_string(),
             said_hello: false,
             loadout_sent: None,
+            paint_sent: None,
         })
     }
 
@@ -279,6 +283,15 @@ fn send_loadout(settings: Res<Settings>, mut connection: ResMut<Connection>) {
     }
 }
 
+fn send_paint(paint: Res<MyPaint>, mut connection: ResMut<Connection>) {
+    if connection.said_hello && connection.paint_sent != Some(paint.version) {
+        connection.paint_sent = Some(paint.version);
+        connection.send(&ClientMsg::Paint {
+            paint: paint.canvas.encode(),
+        });
+    }
+}
+
 fn update_session(
     time: Res<Time>,
     mut messages: MessageReader<NetMsg>,
@@ -343,12 +356,17 @@ fn update_session(
             ServerMsg::MatchEnded { winner } => {
                 session.last_result = Some(match winner {
                     Winner::Player(id) => format!("{} won the last match!", session.name_of(*id)),
-                    Winner::Team(team) => format!(
-                        "Team {} won the last match, {} to {}!",
-                        TEAM_NAMES[*team as usize & 1],
-                        session.team_scores[*team as usize & 1],
-                        session.team_scores[!*team as usize & 1],
-                    ),
+                    Winner::Team(team) => {
+                        let (won, lost) = (
+                            session.team_scores[*team as usize & 1],
+                            session.team_scores[!*team as usize & 1],
+                        );
+                        if *team & 1 == session.team_of(session.my_id) {
+                            format!("Your team won the last match, {won} to {lost}!")
+                        } else {
+                            format!("The enemy team won the last match, {won} to {lost}.")
+                        }
+                    }
                     Winner::Nobody => "The last match ended without a winner.".to_string(),
                 });
                 session.armor_taken = 0;
