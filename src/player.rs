@@ -62,7 +62,21 @@ const KICK_RECOVERY: f32 = 9.0;
 
 /// Field of view of the menu camera, in radians.
 pub const BASE_FOV: f32 = 1.3;
-pub const VIEW_MODEL_REST: Vec3 = Vec3::new(0.2, -0.17, -0.42);
+/// Which way from the eye a gun held from the hip lies: off to the right and
+/// low, per metre forward.
+const HIP_DIRECTION: Vec3 = Vec3::new(0.45, -0.4, -1.0);
+/// How far in front of the eye a gun's back end is, held from the hip.
+const HIP_BACK: f32 = 0.16;
+/// Guns shorter than this (a pistol, the SMG) are held out as far as one this
+/// long: in the hands, rather than tucked in against the body.
+const HIP_SHORTEST: f32 = 0.26;
+
+/// Where the middle of a gun `length` long is held from the hip. A longer gun
+/// reaches further forward from the same hands, and each one sits in the same
+/// part of the screen.
+pub fn hip_position(length: f32) -> Vec3 {
+    HIP_DIRECTION * (HIP_BACK + length.max(HIP_SHORTEST) / 2.0)
+}
 /// `LocalPlayer::slot` when the knife is out (0 and 1 are the gun slots).
 pub const KNIFE_SLOT: usize = 2;
 
@@ -729,7 +743,7 @@ fn follow_camera(
     let (mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
     holder.weapon = player.weapon_id();
     holder.sight = player.sight_id();
-    gun.translation = VIEW_MODEL_REST.lerp(aimed, player.aim)
+    gun.translation = hip_position(length).lerp(aimed, player.aim)
         + kick
         + Vec3::new(0.0, -0.06, 0.0) * tipped
         + Vec3::new(0.0, -0.16, 0.05) * throw

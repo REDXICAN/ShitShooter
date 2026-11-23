@@ -189,7 +189,9 @@ fn setup(
                 sight: crate::weapons::IRON_SIGHTS,
                 shadows: false,
             },
-            Transform::from_translation(crate::player::VIEW_MODEL_REST),
+            Transform::from_translation(crate::player::hip_position(
+                crate::weapons::weapon(crate::weapons::RIFLE).size[2],
+            )),
             Visibility::Hidden,
             children![
                 gun_part(ViewModelPart::Body, &cube, &gun_material),
