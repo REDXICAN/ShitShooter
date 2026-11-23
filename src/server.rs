@@ -83,6 +83,8 @@ const BULLET_LIFETIME: f32 = 1.5;
 
 struct Bot {
     vel: Vec3,
+    /// It was standing on something last tick.
+    grounded: bool,
     /// Where it is running to.
     goal: Vec3,
     retarget_in: f32,
@@ -112,6 +114,7 @@ impl Bot {
     fn new() -> Bot {
         Bot {
             vel: Vec3::ZERO,
+            grounded: false,
             goal: Vec3::ZERO,
             retarget_in: 0.0,
             gun: 0,
@@ -1476,11 +1479,15 @@ fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, e
             bot.goal = player.pos + side * sign * (3.0 + random_unit(rng) * 4.0);
             bot.retarget_in = 0.6 + random_unit(rng);
         } else {
-            let x = random_unit(rng) * 56.0 - 28.0;
-            let z = random_unit(rng) * 56.0 - 28.0;
+            let [min, max] = map.bounds;
+            let x = min.x + random_unit(rng) * (max.x - min.x);
+            let z = min.y + random_unit(rng) * (max.y - min.y);
             bot.goal = match hill {
                 // On the hill half the time, so there is something to fight over.
-                Some(hill) if next_random(rng).is_multiple_of(2) => hill + Vec3::new(x, 0.0, z) * 0.2,
+                Some(hill) if next_random(rng).is_multiple_of(2) => {
+                    let (dx, dz) = (random_unit(rng) * 2.0 - 1.0, random_unit(rng) * 2.0 - 1.0);
+                    hill + Vec3::new(dx, 0.0, dz) * 5.5
+                }
                 _ => Vec3::new(x, 0.0, z),
             };
             bot.retarget_in = 2.0 + random_unit(rng) * 3.0;
@@ -1493,7 +1500,15 @@ fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, e
     bot.vel.z += (wish.z - bot.vel.z) * blend;
     bot.vel.y -= 22.0 * dt;
     let wanted = Vec3::new(bot.vel.x, 0.0, bot.vel.z);
-    let grounded = map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
+    let mut grounded = map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
+    if bot.grounded && !grounded && bot.vel.y <= 0.0 {
+        let drop = map::STEP_UP.max(speed * dt);
+        if map.snap_to_ground(&mut player.pos, map::PLAYER_HALF, drop) {
+            grounded = true;
+            bot.vel.y = 0.0;
+        }
+    }
+    bot.grounded = grounded;
     if let Some(pad) = map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
         // Bots aim with arrow pads from a standstill so they land where intended.
         bot.vel = match pad.direction() {

@@ -20,11 +20,15 @@ mod paint;
 mod paint_editor;
 mod ping;
 mod player;
+mod props;
 mod protocol;
 mod remote;
+mod scenery;
 mod server;
 mod settings;
+mod terrain;
 mod ui;
+mod valley;
 mod weapon_panel;
 mod weapons;
 mod world;
@@ -83,7 +87,7 @@ OPTIONS:
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
-    --map <NAME>         Map to start on: arena or depot  [default: arena]
+    --map <NAME>         Map: arena, depot or valley      [default: arena]
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
     --help               Show this text
 ";
@@ -122,7 +126,7 @@ fn parse_args() -> Result<LaunchArgs, String> {
                 args.server.map = map::MAP_NAMES
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot)"))? as u8;
+                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley)"))? as u8;
             }
             "--airaccel" => {
                 let accel: u16 = number(&flag, value("number")?)?;
@@ -200,7 +204,7 @@ fn main() {
         .init_state::<AppState>()
         .add_plugins((
             net::NetPlugin,
-            world::WorldPlugin,
+            (world::WorldPlugin, scenery::SceneryPlugin),
             player::PlayerPlugin,
             remote::RemotePlugin,
             combat::CombatPlugin,

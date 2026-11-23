@@ -1,6 +1,10 @@
 //! The static scene: map geometry, lighting, the camera and shared assets.
 
-use bevy::{light::NotShadowCaster, prelude::*, render::render_resource::Face};
+use bevy::{
+    light::{CascadeShadowConfigBuilder, NotShadowCaster},
+    prelude::*,
+    render::render_resource::Face,
+};
 
 use crate::{
     grenade::{HeldGrenade, HeldGrenadeModel, held_grenade_transform},
@@ -36,6 +40,10 @@ pub struct GameMap(pub Map);
 /// A block or jump pad of the current map.
 #[derive(Component)]
 struct MapGeometry;
+
+/// The one light that casts shadows.
+#[derive(Component)]
+pub struct Sun;
 
 /// The one camera. It orbits the arena in menus and is the player's eyes in a match.
 #[derive(Component)]
@@ -139,12 +147,22 @@ fn setup(
         ..default()
     });
 
+    // Where it shines from and how brightly is up to the map (`scenery.rs`).
     commands.spawn((
+        Sun,
         DirectionalLight {
             illuminance: 9000.0,
             shadow_maps_enabled: true,
             ..default()
         },
+        // Shadows reach far enough for the outdoor maps.
+        CascadeShadowConfigBuilder {
+            num_cascades: 4,
+            first_cascade_far_bound: 14.0,
+            maximum_distance: 220.0,
+            ..default()
+        }
+        .build(),
         Transform::from_xyz(30.0, 60.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 

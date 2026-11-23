@@ -742,6 +742,14 @@ fn movement(
     let was_grounded = p.grounded;
     let half = p.half();
     p.grounded = map.0.move_and_slide(&mut p.pos, &mut p.vel, half, dt);
+    // Down a slope or a stair: stay on the ground rather than skip off it.
+    if was_grounded && !p.grounded && p.vel.y <= 0.0 {
+        let drop = map::STEP_UP.max(p.horizontal_speed() * dt);
+        if map.0.snap_to_ground(&mut p.pos, half, drop) {
+            p.grounded = true;
+            p.vel.y = 0.0;
+        }
+    }
     // Landing with crouch held carries the speed into a slide.
     if p.grounded && !was_grounded && p.crouching {
         start_slide(p);
@@ -1145,12 +1153,14 @@ fn fall_magazines(
 /// Slow fly-around of the arena behind the menus.
 fn orbit_camera(
     time: Res<Time>,
+    map: Res<GameMap>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
 ) {
     let (mut transform, mut projection) = camera.into_inner();
+    let (center, distance, height) = map.0.look.orbit;
     let angle = time.elapsed_secs() * 0.12;
-    *transform = Transform::from_xyz(angle.cos() * 46.0, 26.0, angle.sin() * 46.0)
-        .looking_at(Vec3::new(0.0, 2.0, 0.0), Vec3::Y);
+    *transform = Transform::from_translation(center + Vec3::new(angle.cos() * distance, height, angle.sin() * distance))
+        .looking_at(center, Vec3::Y);
     if let Projection::Perspective(perspective) = &mut *projection
         && perspective.fov != BASE_FOV
     {

@@ -2,9 +2,13 @@
 //! collision helpers used by the player controller, the bots, grenades and hit
 //! detection. Pure data and math, so the server can use it without any rendering.
 
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec2, Vec3};
 
-use crate::protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE};
+use crate::{
+    protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE},
+    props::PROPS,
+    terrain::Terrain,
+};
 
 /// Half extents of the player's collision box when standing (0.8 x 1.8 x 0.8 m).
 pub const PLAYER_HALF: Vec3 = Vec3::new(0.4, 0.9, 0.4);
@@ -18,8 +22,13 @@ pub const GRENADE_HALF: f32 = 0.12;
 const GRENADE_GRAVITY: f32 = 20.0;
 /// A grenade hitting something faster than this makes a sound.
 pub const BOUNCE_SOUND: f32 = 3.0;
+/// Walking into a ledge at most this high above your feet (a stair, a kerb)
+/// lifts you onto it, and walking off one this high keeps you on the ground.
+pub const STEP_UP: f32 = 0.5;
+/// Side of a cell of the grid that finds the blocks near a point quickly.
+const GRID_CELL: f32 = 8.0;
 
-pub const MAP_NAMES: [&str; 2] = ["Arena", "Depot"];
+pub const MAP_NAMES: [&str; 3] = ["Arena", "Depot", "Valley"];
 
 pub fn player_half(crouching: bool) -> Vec3 {
     if crouching { CROUCH_HALF } else { PLAYER_HALF }
@@ -61,7 +70,7 @@ pub struct JumpPad {
 }
 
 impl JumpPad {
-    fn arrow(center: Vec3, launch: Vec3) -> JumpPad {
+    pub fn arrow(center: Vec3, launch: Vec3) -> JumpPad {
         JumpPad { center, half_size: 1.0, launch }
     }
 
@@ -87,10 +96,73 @@ pub struct Spawn {
     pub yaw: f32,
 }
 
+/// A model from `props::PROPS` standing on the map. Its collision boxes are
+/// among the map's (invisible) blocks.
+pub struct Prop {
+    pub model: usize,
+    /// Where its origin stands.
+    pub pos: Vec3,
+    /// Turned about the vertical, in radians. Models that collide are only
+    /// ever turned by quarter turns, so their boxes stay upright.
+    pub yaw: f32,
+    pub scale: f32,
+}
+
+/// A road drawn over the terrain, along its centre line.
+pub struct Road {
+    pub points: Vec<Vec2>,
+    pub width: f32,
+    /// Asphalt, drawn as a strip of its own; dirt roads are only coloured
+    /// into the ground.
+    pub paved: bool,
+}
+
+/// A capture point in conquest.
+pub struct FlagPoint {
+    /// The foot of the flagpole, on the ground.
+    pub pos: Vec3,
+    /// Where its holders come back in.
+    pub spawns: Vec<Spawn>,
+}
+
+/// How a map is lit and what is around it.
+pub struct Look {
+    /// The colour of the sky (sRGB).
+    pub sky: [f32; 3],
+    /// Fog from this far to this far, if any. Its colour is the sky's.
+    pub fog: Option<(f32, f32)>,
+    /// Where the sun shines from, and how brightly (lux).
+    pub sun_from: Vec3,
+    pub sun: f32,
+    pub ambient: f32,
+    /// The menu camera circles this point at this distance and height.
+    pub orbit: (Vec3, f32, f32),
+}
+
+impl Default for Look {
+    /// The indoor arenas: a dark sky, no fog.
+    fn default() -> Look {
+        Look {
+            sky: [0.03, 0.04, 0.07],
+            fog: None,
+            sun_from: Vec3::new(30.0, 60.0, 18.0),
+            sun: 9000.0,
+            ambient: 350.0,
+            orbit: (Vec3::new(0.0, 2.0, 0.0), 46.0, 26.0),
+        }
+    }
+}
+
 pub struct Map {
     /// Index into `MAP_NAMES`.
     pub id: u8,
+    /// Do not change after `finish`: the grid indexes them.
     pub blocks: Vec<Block>,
+    /// The ground of the outdoor maps. Indoor maps stand on a floor block.
+    pub terrain: Option<Terrain>,
+    /// The corners of the part of the map that is played in (x, z): bots
+    /// pick where to run within it.
+    pub bounds: [Vec2; 2],
     pub pads: Vec<JumpPad>,
     pub spawns: Vec<Spawn>,
     /// Centre of the zone to hold in king of the hill.
@@ -98,6 +170,68 @@ pub struct Map {
     /// Where armor pickups lie, on top of the floor or block below them.
     /// At most 32 (they are sent as a bit mask).
     pub armor_spots: Vec<Vec3>,
+    /// Models standing on the map.
+    pub props: Vec<Prop>,
+    pub roads: Vec<Road>,
+    /// Shallow water: strips along these centre lines (points at the water
+    /// surface), this wide.
+    pub water: Vec<(Vec<Vec3>, f32)>,
+    /// Conquest: the capture points, and where each team starts.
+    pub flags: Vec<FlagPoint>,
+    pub bases: [Vec<Spawn>; 2],
+    pub look: Look,
+    grid: BlockGrid,
+}
+
+/// Which blocks are near which part of the map: the blocks touching each
+/// square cell of a grid over the map's footprint.
+#[derive(Default)]
+struct BlockGrid {
+    origin: Vec2,
+    nx: usize,
+    nz: usize,
+    cells: Vec<Vec<u32>>,
+}
+
+impl BlockGrid {
+    fn new(blocks: &[Block]) -> BlockGrid {
+        let (mut min, mut max) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+        for block in blocks {
+            min = min.min(Vec2::new(block.min.x, block.min.z));
+            max = max.max(Vec2::new(block.max.x, block.max.z));
+        }
+        if blocks.is_empty() {
+            (min, max) = (Vec2::ZERO, Vec2::ONE);
+        }
+        let nx = (((max.x - min.x) / GRID_CELL).ceil() as usize).max(1);
+        let nz = (((max.y - min.y) / GRID_CELL).ceil() as usize).max(1);
+        let mut grid = BlockGrid {
+            origin: min,
+            nx,
+            nz,
+            cells: vec![Vec::new(); nx * nz],
+        };
+        for (index, block) in blocks.iter().enumerate() {
+            let (x0, z0, x1, z1) = grid.span(block.min, block.max);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    grid.cells[z * nx + x].push(index as u32);
+                }
+            }
+        }
+        grid
+    }
+
+    /// The cells (x0, z0, x1, z1, inclusive) a box covers, clamped to the grid.
+    fn span(&self, min: Vec3, max: Vec3) -> (usize, usize, usize, usize) {
+        let cell = |v: f32, origin: f32, n: usize| (((v - origin) / GRID_CELL).floor().max(0.0) as usize).min(n - 1);
+        (
+            cell(min.x, self.origin.x, self.nx),
+            cell(min.z, self.origin.y, self.nz),
+            cell(max.x, self.origin.x, self.nx),
+            cell(max.z, self.origin.y, self.nz),
+        )
+    }
 }
 
 /// True if a player with feet at `feet` is close enough to grab the pickup
@@ -130,10 +264,88 @@ const QUADRANTS: [(f32, f32); 4] = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0,
 const CARDINALS: [(f32, f32); 4] = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)];
 
 impl Map {
+    /// A map with nothing in it yet. Fill it in, then call `finish`.
+    pub fn empty(id: u8) -> Map {
+        Map {
+            id,
+            blocks: Vec::new(),
+            terrain: None,
+            bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
+            pads: Vec::new(),
+            spawns: Vec::new(),
+            hill: Vec3::ZERO,
+            armor_spots: Vec::new(),
+            props: Vec::new(),
+            roads: Vec::new(),
+            water: Vec::new(),
+            flags: Vec::new(),
+            bases: [Vec::new(), Vec::new()],
+            look: Look::default(),
+            grid: BlockGrid::default(),
+        }
+    }
+
+    /// Stands a model on the map, and adds its collision boxes as blocks.
+    /// Call before `finish`.
+    pub fn add_prop(&mut self, model: usize, pos: Vec3, yaw: f32, scale: f32) {
+        let turn = Quat::from_rotation_y(yaw);
+        for [x0, y0, z0, x1, y1, z1] in PROPS[model].colliders {
+            let a = turn * (Vec3::new(*x0, *y0, *z0) * scale) + pos;
+            let b = turn * (Vec3::new(*x1, *y1, *z1) * scale) + pos;
+            self.blocks.push(Block {
+                min: a.min(b),
+                max: a.max(b),
+                color: [0.0; 3],
+                visible: false,
+            });
+        }
+        self.props.push(Prop { model, pos, yaw, scale });
+    }
+
+    /// Where a point marked on a model (see `PropModel::points`) is once the
+    /// model stands at `pos`, turned by `yaw`.
+    pub fn prop_point(model: usize, name: &str, pos: Vec3, yaw: f32) -> Vec3 {
+        let point = PROPS[model]
+            .points
+            .iter()
+            .find(|(point, _)| *point == name)
+            .map_or(Vec3::ZERO, |(_, at)| Vec3::from(*at));
+        Quat::from_rotation_y(yaw) * point + pos
+    }
+
+    /// Indexes the blocks. Call once they are all in.
+    pub fn finish(mut self) -> Map {
+        self.grid = BlockGrid::new(&self.blocks);
+        self
+    }
+
+    /// Calls `f` with every block whose cell the box from `min` to `max`
+    /// touches (a block may come up more than once).
+    fn near(&self, min: Vec3, max: Vec3, mut f: impl FnMut(&Block)) {
+        if self.grid.cells.is_empty() {
+            self.blocks.iter().for_each(f);
+            return;
+        }
+        let (x0, z0, x1, z1) = self.grid.span(min, max);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                for &index in &self.grid.cells[z * self.grid.nx + x] {
+                    f(&self.blocks[index as usize]);
+                }
+            }
+        }
+    }
+
+    /// The height of the ground at (x, z), if the map has terrain.
+    pub fn ground(&self, x: f32, z: f32) -> Option<f32> {
+        self.terrain.as_ref().map(|terrain| terrain.height(x, z))
+    }
+
     /// Unknown ids fall back to the first map.
     pub fn by_id(id: u8) -> Map {
         match id {
             1 => Map::depot(),
+            2 => crate::valley::valley(),
             _ => Map::arena(),
         }
     }
@@ -205,13 +417,13 @@ impl Map {
         armor_spots.extend(CARDINALS.map(|(dx, dz)| Vec3::new(dx, 0.0, dz) * 29.75 + Vec3::Y * 5.0));
 
         Map {
-            id: 0,
-            hill: Vec3::ZERO,
             blocks,
             pads,
             spawns,
             armor_spots,
+            ..Map::empty(0)
         }
+        .finish()
     }
 
     /// A cluttered freight yard: containers, crates and barriers everywhere, so
@@ -296,18 +508,19 @@ impl Map {
         armor_spots.extend(QUADRANTS.map(|(sx, sz)| Vec3::new(18.0 * sx, 2.4, 14.5 * sz)));
 
         Map {
-            id: 1,
-            hill: Vec3::ZERO,
             blocks,
             pads,
             spawns,
             armor_spots,
+            ..Map::empty(1)
         }
+        .finish()
     }
 
-    /// Moves a box with half extents `half` by `vel * dt`, sliding along blocks.
-    /// Velocity is zeroed on any axis that hits something. Returns true if the
-    /// box ended up standing on a block.
+    /// Moves a box with half extents `half` by `vel * dt`, sliding along blocks
+    /// and the ground. Velocity is zeroed on any axis that hits something.
+    /// Walking into a ledge no higher than `STEP_UP` climbs it. Returns true
+    /// if the box ended up standing on something.
     pub fn move_and_slide(&self, pos: &mut Vec3, vel: &mut Vec3, half: Vec3, dt: f32) -> bool {
         let total = *vel * dt;
         let steps = (total.abs().max_element() / 0.25).ceil().clamp(1.0, 32.0) as usize;
@@ -321,33 +534,111 @@ impl Map {
                     continue;
                 }
                 pos[axis] += delta;
-                for block in &self.blocks {
-                    if !overlaps(*pos, half, block) {
-                        continue;
+                let reach = Vec3::splat(0.01);
+                let (mut moved, mut hit) = (*pos, false);
+                self.near(*pos - half - reach, *pos + half + reach, |block| {
+                    if !overlaps(moved, half, block) {
+                        return;
+                    }
+                    if axis != 1 {
+                        let rise = block.max.y - (moved.y - half.y);
+                        if rise > 0.0 && rise <= STEP_UP {
+                            let raised = moved.with_y(block.max.y + half.y + 1e-3);
+                            if self.is_free(raised, half) {
+                                moved = raised;
+                                return;
+                            }
+                        }
                     }
                     if delta > 0.0 {
-                        pos[axis] = block.min[axis] - half[axis];
+                        moved[axis] = block.min[axis] - half[axis];
                     } else {
-                        pos[axis] = block.max[axis] + half[axis];
+                        moved[axis] = block.max[axis] + half[axis];
                         if axis == 1 {
                             grounded = true;
                         }
                     }
+                    hit = true;
+                });
+                *pos = moved;
+                if hit {
                     vel[axis] = 0.0;
+                }
+            }
+            // The ground holds up the middle of the box.
+            if let Some(ground) = self.ground(pos.x, pos.z)
+                && pos.y - half.y < ground + 1e-3
+            {
+                pos.y = pos.y.max(ground + half.y);
+                if vel.y <= 0.0 {
+                    vel.y = 0.0;
+                    grounded = true;
                 }
             }
         }
         grounded
     }
 
-    /// True if a box with half extents `half` fits at `center` without touching a block.
+    /// Puts a box that was standing on something last frame back down on
+    /// what is under it, if that is at most `drop` below its feet: walking
+    /// down a slope or a stair, you stay on the ground instead of skipping
+    /// off it. Returns true if it did.
+    pub fn snap_to_ground(&self, pos: &mut Vec3, half: Vec3, drop: f32) -> bool {
+        let feet = pos.y - half.y;
+        let mut floor = self.ground(pos.x, pos.z).filter(|ground| *ground <= feet + 1e-3);
+        let (min, max) = (*pos - half.with_y(0.0) - Vec3::Y * (half.y + drop), *pos + half);
+        let center = *pos;
+        self.near(min, max, |block| {
+            let under = center.x + half.x > block.min.x
+                && center.x - half.x < block.max.x
+                && center.z + half.z > block.min.z
+                && center.z - half.z < block.max.z;
+            if under && block.max.y <= feet + 1e-3 && floor.is_none_or(|f| block.max.y > f) {
+                floor = Some(block.max.y);
+            }
+        });
+        let Some(floor) = floor.filter(|floor| feet - floor <= drop) else {
+            return false;
+        };
+        let snapped = pos.with_y(floor + half.y);
+        if !self.is_free(snapped, half) {
+            return false;
+        }
+        *pos = snapped;
+        true
+    }
+
+    /// True if a box with half extents `half` fits at `center` without
+    /// touching a block, with the middle of its bottom above the ground.
     pub fn is_free(&self, center: Vec3, half: Vec3) -> bool {
-        !self.blocks.iter().any(|block| overlaps(center, half, block))
+        if self.ground(center.x, center.z).is_some_and(|ground| center.y - half.y < ground - 0.02) {
+            return false;
+        }
+        self.overlapping(center, half).is_none()
+    }
+
+    /// The first block a box at `center` overlaps, if any.
+    fn overlapping(&self, center: Vec3, half: Vec3) -> Option<&Block> {
+        if self.grid.cells.is_empty() {
+            return self.blocks.iter().find(|block| overlaps(center, half, block));
+        }
+        let (x0, z0, x1, z1) = self.grid.span(center - half, center + half);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                for &index in &self.grid.cells[z * self.grid.nx + x] {
+                    let block = &self.blocks[index as usize];
+                    if overlaps(center, half, block) {
+                        return Some(block);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Advances a grenade by one `GRENADE_STEP`: it falls, bounces off blocks
-    /// and rolls to a stop. Returns the speed of its hardest contact with a
-    /// block, 0 if it touched none (above `BOUNCE_SOUND` it can be heard).
+    /// and the ground, and rolls to a stop. Returns the speed of its hardest
+    /// contact, 0 if it touched nothing (above `BOUNCE_SOUND` it can be heard).
     pub fn step_grenade(&self, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> f32 {
         const RESTITUTION: f32 = 0.42;
         /// Share of the sideways speed kept through each contact.
@@ -364,7 +655,7 @@ impl Map {
                     continue;
                 }
                 pos[axis] += delta;
-                let Some(block) = self.blocks.iter().find(|block| overlaps(*pos, half, block)) else {
+                let Some(block) = self.overlapping(*pos, half) else {
                     continue;
                 };
                 pos[axis] = if delta > 0.0 {
@@ -376,6 +667,22 @@ impl Map {
                 *vel *= GRIP;
                 // Too slow to bounce: it stays put on that axis (resting on the floor).
                 vel[axis] = if impact > 1.5 { -vel[axis] * RESTITUTION / GRIP } else { 0.0 };
+                hardest = hardest.max(impact);
+            }
+            let Some(terrain) = &self.terrain else {
+                continue;
+            };
+            let ground = terrain.height(pos.x, pos.z);
+            if pos.y - half.y >= ground {
+                continue;
+            }
+            pos.y = ground + half.y;
+            let normal = terrain.normal(pos.x, pos.z);
+            let into = vel.dot(normal);
+            if into < 0.0 {
+                let impact = -into;
+                let along = *vel - normal * into;
+                *vel = along * GRIP + if impact > 1.5 { normal * impact * RESTITUTION } else { Vec3::ZERO };
                 hardest = hardest.max(impact);
             }
         }
@@ -391,13 +698,90 @@ impl Map {
         })
     }
 
-    /// Distance along the ray to the closest block, if it is nearer than `max`.
+    /// Distance along the ray to the closest block or the ground, if it is
+    /// nearer than `max`.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
-        self.blocks
-            .iter()
-            .filter_map(|block| ray_box(origin, dir, block.min, block.max))
-            .filter(|t| *t < max)
-            .min_by(f32::total_cmp)
+        let block = self.raycast_blocks(origin, dir, max);
+        let ground = self
+            .terrain
+            .as_ref()
+            .and_then(|terrain| terrain.raycast(origin, dir, block.unwrap_or(max)));
+        ground.or(block)
+    }
+
+    /// The nearest block along the ray: walks the grid cells the ray crosses
+    /// (seen from above), nearest first, and stops at the first cell that
+    /// holds a hit closer than its far side.
+    fn raycast_blocks(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        let grid = &self.grid;
+        if grid.cells.is_empty() {
+            return self
+                .blocks
+                .iter()
+                .filter_map(|block| ray_box(origin, dir, block.min, block.max))
+                .filter(|t| *t < max)
+                .min_by(f32::total_cmp);
+        }
+        let size = Vec2::new(grid.nx as f32, grid.nz as f32) * GRID_CELL;
+        let flat = Vec2::new(dir.x, dir.z);
+        let start = Vec2::new(origin.x, origin.z);
+        // Clip the ray to the grid.
+        let (mut t0, mut t1) = (0.0_f32, max);
+        for axis in 0..2 {
+            let (o, d, lo, hi) = (start[axis], flat[axis], grid.origin[axis], grid.origin[axis] + size[axis]);
+            if d.abs() < 1e-8 {
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = minmax((lo - o) / d, (hi - o) / d);
+            t0 = t0.max(a);
+            t1 = t1.min(b);
+        }
+        if t0 > t1 {
+            return None;
+        }
+        let entry = (start + flat * t0 - grid.origin) / GRID_CELL;
+        let counts = [grid.nx, grid.nz];
+        let mut cell = [
+            (entry.x.floor().max(0.0) as usize).min(grid.nx - 1),
+            (entry.y.floor().max(0.0) as usize).min(grid.nz - 1),
+        ];
+        let mut next = [f32::INFINITY; 2];
+        let mut delta = [f32::INFINITY; 2];
+        for axis in 0..2 {
+            let d = flat[axis];
+            if d.abs() < 1e-8 {
+                continue;
+            }
+            delta[axis] = GRID_CELL / d.abs();
+            let edge = grid.origin[axis] + (cell[axis] as f32 + if d > 0.0 { 1.0 } else { 0.0 }) * GRID_CELL;
+            next[axis] = (edge - start[axis]) / d;
+        }
+        let mut best: Option<f32> = None;
+        loop {
+            for &index in &grid.cells[cell[1] * grid.nx + cell[0]] {
+                let block = &self.blocks[index as usize];
+                if let Some(t) = ray_box(origin, dir, block.min, block.max)
+                    && t < max
+                    && best.is_none_or(|b| t < b)
+                {
+                    best = Some(t);
+                }
+            }
+            let axis = if next[0] < next[1] { 0 } else { 1 };
+            let leave = next[axis];
+            if best.is_some_and(|b| b <= leave) || leave > t1 {
+                return best;
+            }
+            let forward = flat[axis] > 0.0;
+            if (!forward && cell[axis] == 0) || (forward && cell[axis] + 1 >= counts[axis]) {
+                return best;
+            }
+            cell[axis] = if forward { cell[axis] + 1 } else { cell[axis] - 1 };
+            next[axis] += delta[axis];
+        }
     }
 
     /// True if no block is in the way between the two points.
@@ -454,12 +838,12 @@ fn shell(blocks: &mut Vec<Block>, floor: [f32; 3], wall: [f32; 3]) {
     add([-A - 2.0, 30.0, -A - 2.0], [A + 2.0, 32.0, A + 2.0], wall, false);
 }
 
-fn minmax(a: f32, b: f32) -> (f32, f32) {
+pub fn minmax(a: f32, b: f32) -> (f32, f32) {
     (a.min(b), a.max(b))
 }
 
 /// `feet` is a point on the ground; the spawn is the box centre standing there.
-fn spawn_facing_center(feet: Vec3) -> Spawn {
+pub fn spawn_facing_center(feet: Vec3) -> Spawn {
     Spawn {
         pos: feet + Vec3::Y * (PLAYER_HALF.y + 0.05),
         yaw: feet.x.atan2(feet.z),
@@ -597,8 +981,8 @@ mod tests {
     }
 
     #[test]
-    fn every_map_has_both_kinds_of_pad() {
-        for map in maps() {
+    fn every_map_with_pads_has_both_kinds() {
+        for map in maps().into_iter().filter(|map| !map.pads.is_empty()) {
             assert!(map.pads.iter().any(|pad| pad.direction().is_some()), "map {}", map.id);
             assert!(map.pads.iter().any(|pad| pad.direction().is_none()), "map {}", map.id);
         }
@@ -650,6 +1034,139 @@ mod tests {
         }
         assert!(bounces >= 1);
         assert!((pos.y - GRENADE_HALF).abs() < 1e-3, "resting height {}", pos.y);
+        assert!(vel.length() < 0.5, "still moving at {vel:?}");
+    }
+
+    /// Flat ground for x < 0, then a hill rising 0.4 m per metre.
+    fn hillside() -> Map {
+        Map {
+            terrain: Some(Terrain::generate(41, 2.0, |x, _| (x * 0.4).max(0.0))),
+            ..Map::empty(0)
+        }
+        .finish()
+    }
+
+    /// Runs like a player at a steady `run` speed for `frames` 60 Hz frames,
+    /// snapping to the ground as the player does. Returns the frames spent
+    /// off the ground.
+    fn run_for(map: &Map, pos: &mut Vec3, run: Vec3, frames: u32) -> u32 {
+        let dt = 1.0 / 60.0;
+        let (mut vel, mut grounded, mut airborne) = (run, true, 0);
+        for _ in 0..frames {
+            vel = Vec3::new(run.x, vel.y - 22.0 * dt, run.z);
+            let was = grounded;
+            grounded = map.move_and_slide(pos, &mut vel, PLAYER_HALF, dt);
+            if was && !grounded && vel.y <= 0.0 && map.snap_to_ground(pos, PLAYER_HALF, STEP_UP.max(run.length() * dt)) {
+                grounded = true;
+                vel.y = 0.0;
+            }
+            airborne += !grounded as u32;
+        }
+        airborne
+    }
+
+    #[test]
+    fn walking_over_a_hill_keeps_you_on_the_ground() {
+        let map = hillside();
+        let mut pos = Vec3::new(-10.0, PLAYER_HALF.y, 3.0);
+        // Up the slope...
+        assert_eq!(run_for(&map, &mut pos, Vec3::new(9.5, 0.0, 0.0), 180), 0);
+        let feet = pos.y - PLAYER_HALF.y;
+        assert!((feet - map.ground(pos.x, pos.z).unwrap()).abs() < 0.01, "feet {feet} at {pos}");
+        assert!(feet > 4.0);
+        // ...and back down it, without skipping off.
+        assert_eq!(run_for(&map, &mut pos, Vec3::new(-9.5, 0.0, 0.0), 180), 0);
+        assert!((pos.y - PLAYER_HALF.y).abs() < 0.01, "{pos}");
+    }
+
+    #[test]
+    fn low_ledges_are_climbed_and_high_ones_block() {
+        for (height, climbs) in [(0.3, true), (0.5, true), (0.7, false)] {
+            let mut map = Map::empty(0);
+            shell(&mut map.blocks, FLOOR, WALL);
+            map.blocks.push(Block {
+                min: Vec3::new(2.0, 0.0, -2.0),
+                max: Vec3::new(4.0, height, 2.0),
+                color: COVER,
+                visible: true,
+            });
+            let map = map.finish();
+            let mut pos = Vec3::new(0.0, PLAYER_HALF.y, 0.0);
+            run_for(&map, &mut pos, Vec3::new(6.0, 0.0, 0.0), 30);
+            let feet = pos.y - PLAYER_HALF.y;
+            if climbs {
+                assert!((feet - height).abs() < 0.01 && pos.x > 2.0, "height {height}: {pos}");
+            } else {
+                assert!(feet.abs() < 0.01 && pos.x < 2.0, "height {height}: {pos}");
+            }
+        }
+    }
+
+    #[test]
+    fn stairs_go_up_and_come_back_down() {
+        let mut map = Map::empty(0);
+        shell(&mut map.blocks, FLOOR, WALL);
+        for step in 0..8 {
+            let x = 2.0 + step as f32 * 0.4;
+            map.blocks.push(Block {
+                min: Vec3::new(x, 0.0, -1.0),
+                max: Vec3::new(x + 0.4, 0.35 * (step + 1) as f32, 1.0),
+                color: COVER,
+                visible: true,
+            });
+        }
+        let map = map.finish();
+        let mut pos = Vec3::new(0.0, PLAYER_HALF.y, 0.0);
+        run_for(&map, &mut pos, Vec3::new(5.0, 0.0, 0.0), 60);
+        assert!((pos.y - PLAYER_HALF.y - 2.8).abs() < 0.01, "top of the stairs: {pos}");
+        assert_eq!(run_for(&map, &mut pos, Vec3::new(-5.0, 0.0, 0.0), 60), 0);
+        assert!((pos.y - PLAYER_HALF.y).abs() < 0.01 && pos.x < 1.5, "back down: {pos}");
+    }
+
+    #[test]
+    fn the_grid_finds_the_same_hits_as_checking_every_block() {
+        let map = Map::depot();
+        let mut seed = 12345_u64;
+        let mut rand = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f32 / 10_000.0
+        };
+        for _ in 0..3000 {
+            let origin = Vec3::new(rand() * 70.0 - 35.0, rand() * 12.0, rand() * 70.0 - 35.0);
+            let dir = Vec3::new(rand() - 0.5, rand() - 0.6, rand() - 0.5).normalize();
+            let max = rand() * 80.0;
+            let brute = map
+                .blocks
+                .iter()
+                .filter_map(|block| ray_box(origin, dir, block.min, block.max))
+                .filter(|t| *t < max)
+                .min_by(f32::total_cmp);
+            let fast = map.raycast(origin, dir, max);
+            assert_eq!(brute.is_some(), fast.is_some(), "{origin} {dir} {max}");
+            if let (Some(a), Some(b)) = (brute, fast) {
+                assert!((a - b).abs() < 1e-4, "{origin} {dir}: {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn bullets_and_grenades_stop_at_the_ground() {
+        let map = hillside();
+        // A level shot into the slope hits it where it is 2 m high.
+        let t = map.raycast(Vec3::new(-10.0, 2.0, 0.0), Vec3::X, 100.0).unwrap();
+        assert!((t - 15.0).abs() < 0.05, "{t}");
+        assert!(!map.line_of_sight(Vec3::new(-10.0, 2.0, 0.0), Vec3::new(30.0, 2.0, 0.0)));
+        // A grenade lobbed onto flat ground bounces and settles on it.
+        let mut pos = Vec3::new(-20.0, 3.0, 0.0);
+        let mut vel = Vec3::new(4.0, 3.0, 1.0);
+        let mut bounces = 0;
+        for _ in 0..600 {
+            bounces += (map.step_grenade(&mut pos, &mut vel, 1.0 / 60.0) > BOUNCE_SOUND) as u32;
+        }
+        assert!(bounces >= 1);
+        assert!((pos.y - GRENADE_HALF).abs() < 1e-3 && pos.x < 0.0, "rests at {pos}");
         assert!(vel.length() < 0.5, "still moving at {vel:?}");
     }
 }

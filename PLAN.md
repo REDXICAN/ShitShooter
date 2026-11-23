@@ -1,5 +1,46 @@
 # Plan
 
+## Round 2: a big map with capture points
+
+A Battlefield-style map, much bigger than Arena and Depot (320 m across,
+playable), with hills, roads, a creek, buildings you can enter, rocks and
+trees, and a new mode, Conquest, played on capture points.
+
+1. [x] Map engine: a heightfield `Terrain` in `Map` (walking, bullets,
+   grenades, line of sight), step-up onto low ledges and stairs, snapping
+   down slopes and stairs, a grid so thousands of blocks stay fast.
+2. [x] Assets: `art/map_props.py` builds every building, rock, tree and prop
+   in Blender, exports `assets/models/map/*.glb`, and writes their collision
+   boxes to `src/props.rs` (generated: the server has no renderer).
+3. [x] The map, "Valley": terrain, roads, creek, five flag sites, two team
+   bases, scattered trees and rocks; drawn with a vertex-coloured terrain
+   mesh, a daylight sky and fog.
+4. [ ] Conquest mode: five flags, tickets (a death costs one, holding more
+   flags bleeds the enemy), spawning at your base or flags you hold; bots
+   path-find to flags (`src/nav.rs`); HUD flag row, capture bar and flag
+   markers. Small maps get three flags too.
+5. [ ] Minimap, and picking where to spawn on the death screen.
+
+Done so far, worth knowing:
+
+- Colliding models only turn by quarter turns, so their boxes stay upright.
+  Roofs collide as a stepped shell, hollow inside. Stairs need a metre of
+  floor in front of the first step: you cannot step onto a stair from the
+  side (the box spans two steps, 0.67 m).
+- `src/valley.rs` tests walk a player up the stairs of the tall house, the
+  barn loft, the warehouse mezzanine and the chapel tower to the belfry.
+- Re-run `art/map_props.py` after changing a model; it rewrites
+  `src/props.rs`. The selftest plays on Valley with `--map depot` (it
+  presses "next map" once); add `--port` if 7777 is busy.
+
+Decided (first guesses, tuned in play): flags capture in 10 s for one
+player, faster with more (up to 3); 250 tickets a team; holding more flags
+bleeds the other team 0.25 tickets a second per flag of difference.
+
+---
+
+## Round 1 (done)
+
 Ideas from the GitHub discussions and PR #4, in the order to build them.
 Each step is its own commit to `main`. Tick a step off when it is done.
 
