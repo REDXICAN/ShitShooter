@@ -1814,7 +1814,7 @@ fn update_key_hints(
         return;
     }
     for (hint, mut text) in &mut hints {
-        set_text(&mut text, settings.bind(hint.0).display());
+        set_text(&mut text, settings.key_names(hint.0));
     }
 }
 
@@ -1946,14 +1946,14 @@ fn update_hud(
                 DIM,
             ),
             Hud::SlotKey(slot) => (
-                settings.bind(slot_actions[slot]).display().to_string(),
+                settings.key_name(slot_actions[slot]),
                 if slot == player.slot { ACCENT } else { DIM },
             ),
             Hud::SlotName(slot) => (
                 slot_names[slot].to_string(),
                 if slot == player.slot { TEXT } else { DIM },
             ),
-            Hud::GrenadeKey => (settings.bind(Action::Grenade).display().to_string(), DIM),
+            Hud::GrenadeKey => (settings.key_name(Action::Grenade), DIM),
             Hud::GrenadeName => (
                 grenade(player.grenade).name.to_uppercase(),
                 if player.hand.is_some() {

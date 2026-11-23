@@ -146,6 +146,12 @@ impl Action {
     }
 }
 
+/// How many keys or buttons each action can have.
+const BIND_SLOTS: usize = 2;
+
+/// Shown for an action with nothing bound.
+const UNBOUND: &str = "-";
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Bind {
     Key(KeyCode),
@@ -263,7 +269,9 @@ pub struct Settings {
     pub sights: [SightId; GUN_COUNT as usize],
     /// The kind of grenade carried.
     pub grenade: GrenadeKind,
-    binds: [Bind; Action::ALL.len()],
+    /// Each action's main binding and its optional second one. The main one is
+    /// only empty when the action has nothing bound at all.
+    binds: [[Option<Bind>; BIND_SLOTS]; Action::ALL.len()],
     /// False during the self-test, which must not touch the player's file.
     persist: bool,
 }
@@ -283,7 +291,7 @@ impl Default for Settings {
             secondary: PISTOL,
             sights: default_sights(),
             grenade: FRAG,
-            binds: Action::ALL.map(|action| action.info().2),
+            binds: Action::ALL.map(|action| [Some(action.info().2), None]),
             persist: false,
         }
     }
@@ -313,18 +321,52 @@ impl Dial {
 }
 
 impl Settings {
-    pub fn bind(&self, action: Action) -> Bind {
-        self.binds[action as usize]
+    /// What is bound in one of an action's slots (0 = main, 1 = second).
+    pub fn bind(&self, action: Action, slot: usize) -> Option<Bind> {
+        self.binds[action as usize][slot]
     }
 
-    /// Binds `action`. If another action already used that key, the two swap,
-    /// so nothing is ever left without a binding.
-    fn set_bind(&mut self, action: Action, bind: Bind) {
-        let previous = self.binds[action as usize];
-        if let Some(other) = self.binds.iter_mut().find(|b| **b == bind) {
+    /// Everything bound to an action.
+    pub fn binds(&self, action: Action) -> impl Iterator<Item = Bind> + '_ {
+        self.binds[action as usize].iter().flatten().copied()
+    }
+
+    /// The name of an action's main binding, for hints on screen.
+    pub fn key_name(&self, action: Action) -> String {
+        self.bind(action, 0).map_or_else(|| UNBOUND.to_string(), Bind::display)
+    }
+
+    /// The names of all of an action's bindings, e.g. `W / ARROW UP`.
+    pub fn key_names(&self, action: Action) -> String {
+        let names: Vec<String> = self.binds(action).map(Bind::display).collect();
+        if names.is_empty() { UNBOUND.to_string() } else { names.join(" / ") }
+    }
+
+    /// Puts `bind` in one of `action`'s slots. Whatever slot held that key
+    /// before (this action's other one, or another action's) gets what this
+    /// slot held, so a key is never bound twice. Taking a key into an empty
+    /// second slot leaves its old action without it.
+    fn set_bind(&mut self, action: Action, slot: usize, bind: Bind) {
+        let previous = self.binds[action as usize][slot];
+        if let Some(other) = self.binds.iter_mut().flatten().find(|b| **b == Some(bind)) {
             *other = previous;
         }
-        self.binds[action as usize] = bind;
+        self.binds[action as usize][slot] = Some(bind);
+        self.tidy_binds();
+    }
+
+    fn clear_bind(&mut self, action: Action, slot: usize) {
+        self.binds[action as usize][slot] = None;
+        self.tidy_binds();
+    }
+
+    /// A lone binding always sits in the main slot.
+    fn tidy_binds(&mut self) {
+        for slots in &mut self.binds {
+            if slots[0].is_none() {
+                slots.swap(0, 1);
+            }
+        }
     }
 
     fn dial(&mut self, dial: Dial) -> &mut f32 {
@@ -477,10 +519,8 @@ impl Settings {
                     let action = key
                         .strip_prefix("bind.")
                         .and_then(|name| Action::ALL.into_iter().find(|a| a.info().1 == name));
-                    // Swapped in, so that a key saved for one action never ends
-                    // up doubling the default of an action added since.
-                    if let (Some(action), Some(bind)) = (action, Bind::parse(value)) {
-                        settings.set_bind(action, bind);
+                    if let Some(action) = action {
+                        settings.parse_binds(action, value);
                     }
                 }
             }
@@ -490,6 +530,23 @@ impl Settings {
             settings.secondary = next_gun(settings.secondary, settings.primary);
         }
         settings
+    }
+
+    /// Reads `bind.<action> = Main, Second` (or one key, or nothing for unbound).
+    fn parse_binds(&mut self, action: Action, value: &str) {
+        let binds: Vec<Bind> = value.split(',').filter_map(|name| Bind::parse(name.trim())).collect();
+        // Nothing readable in a line that is not empty: keep the default.
+        if binds.is_empty() && !value.is_empty() {
+            return;
+        }
+        for slot in 0..BIND_SLOTS {
+            // Swapped in, so that a key saved for one action never ends
+            // up doubling the default of an action added since.
+            match binds.get(slot) {
+                Some(bind) => self.set_bind(action, slot, *bind),
+                None => self.clear_bind(action, slot),
+            }
+        }
     }
 
     fn to_text(&self) -> String {
@@ -509,7 +566,8 @@ impl Settings {
 ", weapon(gun).name, sight(self.sights[gun as usize]).name));
         }
         for action in Action::ALL {
-            text.push_str(&format!("bind.{} = {}\n", action.info().1, self.bind(action).file_name()));
+            let names: Vec<String> = self.binds(action).map(Bind::file_name).collect();
+            text.push_str(&format!("bind.{} = {}\n", action.info().1, names.join(", ")));
         }
         text
     }
@@ -560,20 +618,20 @@ pub struct ActionInput<'w> {
 impl ActionInput<'_> {
     pub fn pressed(&self, action: Action) -> bool {
         self.controls.captured
-            && match self.settings.bind(action) {
+            && self.settings.binds(action).any(|bind| match bind {
                 Bind::Key(key) => self.keys.pressed(key),
                 Bind::Mouse(button) => self.mouse.pressed(button),
                 wheel => self.wheel.step == Some(wheel),
-            }
+            })
     }
 
     pub fn just_pressed(&self, action: Action) -> bool {
         self.controls.captured
-            && match self.settings.bind(action) {
+            && self.settings.binds(action).any(|bind| match bind {
                 Bind::Key(key) => self.keys.just_pressed(key),
                 Bind::Mouse(button) => self.mouse.just_pressed(button),
                 wheel => self.wheel.step == Some(wheel),
-            }
+            })
     }
 }
 
@@ -615,6 +673,7 @@ pub struct SettingsMenu {
 
 struct Capture {
     action: Action,
+    slot: usize,
     /// Set once every key and button has been let go, so the click that
     /// started the capture is not itself taken as the new binding.
     armed: bool,
@@ -634,7 +693,7 @@ struct SettingsPanel;
 #[derive(Component)]
 struct DialText(Dial);
 #[derive(Component)]
-struct BindText(Action);
+struct BindText(Action, usize);
 /// The text of the button that switches between a window and full screen.
 #[derive(Component)]
 struct DisplayText;
@@ -674,12 +733,14 @@ fn capture_bind(
         .get_just_pressed()
         .find(|key| BINDABLE_KEYS.contains(key))
         .map(|key| Bind::Key(*key));
+    // Taken when the button comes back up: that release is what clicks a key
+    // button in the panel, and it would otherwise start a new capture.
     let button = mouse
-        .get_just_pressed()
+        .get_just_released()
         .find(|button| BINDABLE_BUTTONS.iter().any(|(b, _)| b == *button))
         .map(|button| Bind::Mouse(*button));
     if let Some(bind) = key.or(button).or(wheel.step) {
-        settings.set_bind(capture.action, bind);
+        settings.set_bind(capture.action, capture.slot, bind);
         menu.capturing = None;
     }
 }
@@ -812,13 +873,13 @@ fn spawn_panel(commands: &mut Commands) {
                     card.spawn(ui::spread_row()).with_children(|heading| {
                         heading.spawn(ui::section("Controls"));
                         heading.spawn(ui::label(
-                            "Click a control, then press the key or mouse button (or scroll) for it.",
+                            "Click a slot, then press the key or mouse button (or scroll) for it. Right-click clears it.",
                             14.0,
                             DIM,
                         ));
                     });
                     card.spawn(Node {
-                        column_gap: px(28),
+                        column_gap: px(20),
                         ..default()
                     })
                     .with_children(|columns| {
@@ -833,27 +894,32 @@ fn spawn_panel(commands: &mut Commands) {
                                     for action in third.iter().copied() {
                                         binds
                                             .spawn(Node {
-                                                width: px(320),
+                                                width: px(BIND_ROW_WIDTH),
                                                 ..row()
                                             })
                                             .with_children(|row| {
-                                                row.spawn(ui::label(action.label(), 17.0, DIM));
-                                                row.spawn((
-                                                    key_button(140),
-                                                    children![(
-                                                        ui::label("", 16.0, TEXT),
-                                                        Pickable::IGNORE,
-                                                        BindText(action)
-                                                    )],
-                                                ))
-                                                .observe(
-                                                    move |_: On<Activate>, mut menu: ResMut<SettingsMenu>| {
-                                                        menu.capturing = Some(Capture {
-                                                            action,
-                                                            armed: false,
-                                                        });
-                                                    },
-                                                );
+                                                row.spawn(ui::label(action.label(), 14.0, DIM));
+                                                row.spawn(Node {
+                                                    column_gap: px(6),
+                                                    ..default()
+                                                })
+                                                .with_children(|slots| {
+                                                    for slot in 0..BIND_SLOTS {
+                                                        // Narrow padding, so MOUSE FORWARD fits on one line.
+                                                        let mut button = key_button(BIND_BUTTON_WIDTH);
+                                                        button.2.padding = UiRect::axes(px(4), px(5));
+                                                        slots
+                                                            .spawn((
+                                                                button,
+                                                                children![(
+                                                                    ui::label("", 13.0, TEXT),
+                                                                    Pickable::IGNORE,
+                                                                    BindText(action, slot)
+                                                                )],
+                                                            ))
+                                                            .observe(click_bind(action, slot));
+                                                    }
+                                                });
                                             });
                                     }
                                 });
@@ -871,6 +937,34 @@ fn spawn_panel(commands: &mut Commands) {
                 });
             });
         });
+}
+
+/// Each row of the controls: the action's name and its two key buttons.
+const BIND_ROW_WIDTH: i32 = 372;
+const BIND_BUTTON_WIDTH: i32 = 110;
+
+/// An observer for a key button: a click waits for the key to put in that
+/// slot, a right-click empties it.
+fn click_bind(
+    action: Action,
+    slot: usize,
+) -> impl Fn(On<Activate>, Res<ButtonInput<MouseButton>>, ResMut<SettingsMenu>, ResMut<Settings>) {
+    move |_, mouse, mut menu, mut settings| {
+        // A click while a binding waits is that binding; `capture_bind` takes it.
+        if menu.capturing.as_ref().is_some_and(|capture| capture.armed) {
+            return;
+        }
+        if mouse.just_released(MouseButton::Right) {
+            settings.clear_bind(action, slot);
+            menu.capturing = None;
+        } else {
+            menu.capturing = Some(Capture {
+                action,
+                slot,
+                armed: false,
+            });
+        }
+    }
 }
 
 /// An observer that moves `dial` one step up or down when its button is clicked.
@@ -898,16 +992,23 @@ fn update_panel(
     for (dial, mut text) in &mut dials {
         ui::set_text(&mut text, settings.dial_text(dial.0));
     }
-    let capturing = menu.capturing.as_ref().map(|capture| capture.action);
-    for (bind, mut text, mut color) in &mut binds {
-        let waiting = capturing == Some(bind.0);
+    let capturing = menu.capturing.as_ref().map(|capture| (capture.action, capture.slot));
+    for (&BindText(action, slot), mut text, mut color) in &mut binds {
+        let waiting = capturing == Some((action, slot));
+        let bound = settings.bind(action, slot);
         let shown = if waiting {
             "press a key...".to_string()
         } else {
-            settings.bind(bind.0).display()
+            bound.map_or_else(|| UNBOUND.to_string(), Bind::display)
         };
         ui::set_text(&mut text, shown);
-        let wanted = if waiting { ACCENT } else { TEXT };
+        let wanted = if waiting {
+            ACCENT
+        } else if bound.is_some() {
+            TEXT
+        } else {
+            DIM
+        };
         if color.0 != wanted {
             color.0 = wanted;
         }
@@ -959,8 +1060,12 @@ mod tests {
             grenade: crate::protocol::SMOKE,
             ..default()
         };
-        settings.set_bind(Action::Grenade, Bind::Mouse(MouseButton::Middle));
-        settings.set_bind(Action::Crouch, Bind::Key(KeyCode::KeyC));
+        settings.set_bind(Action::Grenade, 0, Bind::Mouse(MouseButton::Middle));
+        settings.set_bind(Action::Crouch, 0, Bind::Key(KeyCode::KeyC));
+        settings.set_bind(Action::Forward, 1, Bind::Key(KeyCode::ArrowUp));
+        // Taken from reload, which is left with nothing.
+        settings.set_bind(Action::Jump, 1, Bind::Key(KeyCode::KeyR));
+        assert_eq!(settings.binds(Action::Reload).count(), 0);
         assert_eq!(Settings::parse(&settings.to_text()), settings);
     }
 
@@ -1022,7 +1127,7 @@ sight.Pistol = Scope
         let parsed = Settings::parse("sensitivity = lots\nfov = 9000\nbind.jump = Banana\nnonsense\n");
         assert_eq!(parsed.sensitivity, Settings::default().sensitivity);
         assert_eq!(parsed.fov, 100.0);
-        assert_eq!(parsed.bind(Action::Jump), Bind::Key(KeyCode::Space));
+        assert_eq!(parsed.bind(Action::Jump, 0), Some(Bind::Key(KeyCode::Space)));
     }
 
     #[test]
@@ -1045,7 +1150,7 @@ sight.Pistol = Scope
         let settings = Settings::default();
         for (i, a) in Action::ALL.iter().enumerate() {
             for b in &Action::ALL[i + 1..] {
-                assert_ne!(settings.bind(*a), settings.bind(*b), "{a:?} and {b:?}");
+                assert_ne!(settings.bind(*a, 0), settings.bind(*b, 0), "{a:?} and {b:?}");
             }
         }
     }
@@ -1054,15 +1159,43 @@ sight.Pistol = Scope
     fn a_saved_key_never_ends_up_bound_twice() {
         // Crouch saved on the key that is the grenade's default.
         let parsed = Settings::parse("bind.crouch = KeyG\n");
-        assert_eq!(parsed.bind(Action::Crouch), Bind::Key(KeyCode::KeyG));
-        assert_ne!(parsed.bind(Action::Grenade), Bind::Key(KeyCode::KeyG));
+        assert_eq!(parsed.bind(Action::Crouch, 0), Some(Bind::Key(KeyCode::KeyG)));
+        assert!(parsed.binds(Action::Grenade).all(|bind| bind != Bind::Key(KeyCode::KeyG)));
+        // Files from before second bindings still read, and nothing is added.
+        assert_eq!(parsed.bind(Action::Crouch, 1), None);
     }
 
     #[test]
     fn rebinding_to_a_used_key_swaps() {
         let mut settings = Settings::default();
-        settings.set_bind(Action::Reload, Bind::Key(KeyCode::KeyG));
-        assert_eq!(settings.bind(Action::Reload), Bind::Key(KeyCode::KeyG));
-        assert_eq!(settings.bind(Action::Grenade), Bind::Key(KeyCode::KeyR));
+        settings.set_bind(Action::Reload, 0, Bind::Key(KeyCode::KeyG));
+        assert_eq!(settings.bind(Action::Reload, 0), Some(Bind::Key(KeyCode::KeyG)));
+        assert_eq!(settings.bind(Action::Grenade, 0), Some(Bind::Key(KeyCode::KeyR)));
+    }
+
+    #[test]
+    fn an_action_takes_two_keys() {
+        let mut settings = Settings::default();
+        settings.set_bind(Action::Jump, 1, Bind::Mouse(MouseButton::Back));
+        assert_eq!(
+            settings.binds(Action::Jump).collect::<Vec<_>>(),
+            [Bind::Key(KeyCode::Space), Bind::Mouse(MouseButton::Back)]
+        );
+        assert_eq!(settings.key_names(Action::Jump), "SPACE / MOUSE BACK");
+        // Putting the main key in the second slot swaps the two.
+        settings.set_bind(Action::Jump, 1, Bind::Key(KeyCode::Space));
+        assert_eq!(
+            settings.binds(Action::Jump).collect::<Vec<_>>(),
+            [Bind::Mouse(MouseButton::Back), Bind::Key(KeyCode::Space)]
+        );
+        // Clearing the main one moves the second one up.
+        settings.set_bind(Action::Jump, 1, Bind::Key(KeyCode::KeyV));
+        settings.clear_bind(Action::Jump, 0);
+        assert_eq!(settings.bind(Action::Jump, 0), Some(Bind::Key(KeyCode::KeyV)));
+        assert_eq!(settings.bind(Action::Jump, 1), None);
+        settings.clear_bind(Action::Jump, 0);
+        assert_eq!(settings.key_name(Action::Jump), UNBOUND);
+        let parsed = Settings::parse(&settings.to_text());
+        assert_eq!(parsed.binds(Action::Jump).count(), 0, "unbound is saved as unbound");
     }
 }
