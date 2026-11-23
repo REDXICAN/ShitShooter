@@ -1,0 +1,235 @@
+# Plan
+
+Ideas from the GitHub discussions and PR #4, in the order to build them.
+Each step is its own commit to `main`. Tick a step off when it is done.
+
+Already done: #1 paste the lobby address (4f389e0). Air strafing (#5) is in,
+see `src/player.rs` `AIR_WISH_SPEED` / `AIR_ACCEL`; only tuning is left (step 9).
+
+Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
+**reload style 2 (Ring)**.
+
+## Order
+
+1. [ ] Damage direction (#2)
+2. [ ] Bodies stay after death (#3)
+3. [ ] Shotgun choke when aiming (#7, part 1)
+4. [ ] Loadout menu, layout 1 (PR #4)
+5. [ ] Weapon panel, type 1 with the ring reload (PR #4)
+6. [ ] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
+7. [ ] Reload animations on the guns
+8. [ ] 2x sight on every gun, and zoom set by the sight (#7, part 2)
+9. [ ] Air strafe tuning (#5)
+
+Later, not now: surf ramps (#6), see the last section.
+
+Why this order: 1–3 are small and need no network or model changes. 4 comes
+before 5 because it builds the gun preview camera, and the panel needs gun
+images from it. All Blender work is done in one pass (6) before the code that
+needs it (7, 8).
+
+---
+
+## Decided
+
+- Shotgun reload: only firing or switching stops a shell reload. Aiming does
+  not stop it, and you cannot aim until it is done (as for every reload today).
+- Bodies tip over onto the floor (a short animation, no ragdoll physics). They
+  do not block players or bullets. Bots' bodies stay too.
+- Reloading a magazine gun drops the old magazine. It falls to the floor and
+  disappears after a few seconds, and it does not collide with players. The
+  shotgun drops nothing.
+- Model edits: where a magazine is already its own node, rename it in the
+  glTF file directly. Use Blender (import, edit, export) only where it is
+  merged into another mesh, so the other guns are not changed by a re-export.
+- Every number in this plan (choke spread and time, how long bodies stay,
+  zooms, time per shell) is a first guess, tuned in play.
+
+## 1. Damage direction (#2)
+
+"Subtle, like Apex."
+
+- On `ServerMsg::Hit` with `victim == me` and `attacker != me`, take the
+  attacker's position (their `RemotePlayer` transform) relative to our yaw.
+- Show a thin arc on a ring around the crosshair, pointing at them, and fade it
+  over about 1 s. Several hits from different sides each get their own arc.
+- Grenade hits: point at the explosion we just saw, not at the thrower.
+- Files: `src/player.rs` (next to `damage_flash`, line ~386), new overlay in
+  `src/ui.rs` (next to `Overlay::DamageFlash`). No protocol change.
+
+## 2. Bodies stay after death (#3)
+
+Today a dead player is just hidden (`src/remote.rs`, ~line 168), so there is
+nothing to teabag.
+
+- When a remote player goes from alive to dead, spawn a copy of their body
+  where they died: lying flat on the floor, in their paint job, no gun.
+- Keep it about 8 s, then sink it into the floor and despawn it. Despawn
+  bodies when the match ends (`DespawnOnExit`).
+- Crouching is already sent and shown, so the teabag works once bodies exist.
+- Client only. No protocol change.
+
+## 3. Shotgun choke (#7, part 1)
+
+Tighter pellets the longer you aim, like a choke.
+
+- New `Weapon` field, e.g. `choke: Option<Choke { spread, time }>`. Only the
+  shotgun has one.
+- While aimed, the cone goes from `aim_spread` down to the choke spread over
+  `time` (about 0.5 s). Unaiming or firing resets it.
+- Spread is picked on the shooter's side (`src/combat.rs`, ~line 338), so the
+  server does not change.
+- Feedback: a click sound and a smaller crosshair once fully choked.
+- In the game it is just "Shotgun". No Apex names.
+
+## 4. Loadout menu, layout 1 (PR #4)
+
+Read the prototype first. Get the branch with
+`git fetch origin pull/4/head:loadout-ui-prototype`, then read files with
+`git show loadout-ui-prototype:prototypes/loadout-ui/<file>`. Start with
+`README.md`, then `types.js` (type `arrows`), `loadout.js` and `viewer.js`.
+Do not add the `prototypes/` folder to `main`.
+
+- Replaces `loadout_button`, `sight_button` and `grenade_button` in
+  `src/ui.rs`, in the pause menu and the lobby.
+- A 3D view of the gun at the top, with its chosen sight on it.
+- Each slot has ‹ › arrows for the gun and small arrows for the sight; the
+  grenade has ‹ ›. Pointing at an arrow previews the gun or sight it would
+  give, before the click.
+- Rules stay as in `src/settings.rs`: never the same gun twice (taking the
+  other slot's gun swaps them), and each gun keeps its own sight. A gun with no
+  mount shows "No sight mount".
+- 3D view: a second `Camera3d` that renders to an `Image`, shown with an
+  `ImageNode`. The gun goes on its own render layer. Reuse the fitting steps
+  from `src/gun_model.rs`.
+- Also render a small side image of each gun (with its sight) for step 5.
+- Pause menu card stays the size it is now. In the lobby it may be about
+  100 px taller.
+- Check at 1280×720 and 1920×1080.
+
+## 5. Weapon panel, type 1 with the ring reload (PR #4)
+
+Prototype: `hud.js`, `hud.css` (type `compact`, reload `ring`).
+
+- Replaces the bottom right weapon panel in `src/ui.rs` (`slot_chip`,
+  `grenade_chip`, `Hud::Ammo`, `Bar::Ammo`).
+- One row: grenade icons, the image of the gun in hand (from step 4), ammo.
+- Only the gun in hand shows. On a switch, a strip with all three slots shows
+  for about 1.5 s, then fades out. The gun image slides in on a switch.
+- Grenades: the word GRENADE and one icon per grenade. A thrown one goes grey,
+  fills from the bottom while it recharges and pulses when ready.
+- Ammo: a little dim when full, orange at a quarter or less (the same rule as
+  today), a short kick on each shot.
+- Ring reload: a ring fills around the seconds left. Needs a round progress
+  shape: a UI material, or a ring texture with a fill.
+- The panel fades after 3 s without an action, but never during a reload or
+  with low ammo.
+- Once 4 and 5 are in: close draft PR #4 with a thank-you comment that links
+  the commits (agreed, no need to ask).
+
+## 6. Blender pass
+
+What the models have today:
+
+| Gun | Model | Magazine | Notes |
+|---|---|---|---|
+| Rifle | `M4A1.gltf` | own node `Mag` | ready, just rename to `Magazine` |
+| SMG | `MP7.gltf` | unknown (nodes are `Cube.0xx_low`) | find it |
+| Shotgun | `Shotgun.glb` | tube (`MagTube`, `MagCap`), loads by shell | `Pump` is its own node; needs a shell mesh; no `SightMount` |
+| Sniper | `SCAR.gltf` | unknown (`Cube.0xx`); `Cube.002` hangs below the receiver, likely the mag | find it |
+| Pistol | `M1911Tactical.gltf` | unknown (`Cube.0xx`); `Cube.006` sits inside the grip, likely the mag | find it; the slide could lock back too |
+
+Only the shotgun, knife and sights have `.blend` sources in `art/`. For the
+glTF guns, import into Blender and save a `.blend` in `art/` so later edits have
+a source.
+
+For each gun:
+
+- Find the magazine. If it is its own node, rename it `Magazine` in the glTF
+  file, without Blender. If it is merged into another mesh, separate it in
+  Blender (Edit Mode → P → Selection), name it `Magazine` and re-export.
+- Set the magazine's origin to the top of the magazine, where it meets the gun,
+  so it can slide out cleanly.
+- Optional parts the code can animate, if they are their own objects: `Bolt`
+  (rifle, SMG, sniper), `Slide` (pistol).
+- Shotgun: add a `SightMount` empty on top of the receiver, rename the bead to
+  `IronSight...`, and model a small `Shell` (its own file, or a hidden node).
+- New 2x sight: `art/2x.blend` → `assets/models/sights/2x.glb`, with an
+  `AimPoint` empty at the dot, like the other sights. It goes on every gun,
+  so keep it small enough to suit the pistol too.
+- Re-export, then check every gun still sits right in first person, aimed and
+  at the hip (the fitting measures the model, so a moved part can shift it).
+
+## 7. Reload animations on the guns
+
+- `src/gun_model.rs`: when fitting a model, also find nodes named `Magazine`,
+  `Bolt`, `Slide`, `Pump` and keep their entities and rest transforms.
+- `src/player.rs` view model: drive them from reload progress (`reload`, line
+  ~717). Mag guns: tip the gun (exists), the magazine drops out and away, a new
+  one comes up and goes in (reuse the `magazine_out` curve that the box guns
+  use), then the bolt or slide snaps forward.
+- The old magazine could drop as a short-lived prop that falls to the floor.
+- Shotgun (decided): a real shell-by-shell reload.
+  - Each shell takes about 0.4 s and adds one round. It keeps going until the
+    tube is full; firing (or switching) stops it after the shell in progress.
+  - An empty tube ends with the pump racked; a partial one does not.
+  - `Weapon` gets a way to say "per shell" (e.g. `reload_per_round: bool`,
+    with `reload` meaning the time per shell). `src/player.rs` reload logic
+    adds one round per step instead of filling the magazine at the end.
+  - Server: it does not track players' ammo, only bots' (`src/server.rs`,
+    bot reload ~line 1515). So only the bots' reload changes there: they load
+    shell by shell too.
+  - The HUD ring from step 5 fills per shell, or shows shells left to load.
+  - The shell mesh from step 6 is pushed into the loading port each step.
+- Remote players (`src/remote.rs`): at least move the magazine on their gun
+  too, so a reload reads from across the map.
+- Reload sounds per step (mag out, mag in, bolt, shell in, pump). There are
+  no sound files: every sound is made in code in `src/audio.rs`, so these are
+  new `synth_*` functions.
+
+## 8. 2x sight on every gun, and zoom set by the sight (#7, part 2)
+
+2x sight:
+
+- `src/weapons.rs`: add `TWO_X` to `SIGHTS` (no overlay) and to the `sights`
+  list of every gun (not the knife).
+- The loadout from step 4 then shows it with no extra work.
+- Called "2x sight" in game, not "HCOG".
+- Step 6 must check the 2x model fits every gun's `SightMount` (size, height,
+  and that the dot lines up when aimed on each one).
+
+Zoom comes only from the sight, never from the gun:
+
+- Today each gun has its own `Weapon::zoom` (0.55–0.8) and only the scope
+  overrides it (`LocalPlayer::zoom` in `src/player.rs`).
+- Remove `Weapon::zoom`. Make `Sight::zoom` a plain `f32` that every sight
+  sets, and have `LocalPlayer::zoom` read only the sight.
+- Values to start from: iron sights 0.85, red dot 0.75, reflex 0.75, 2x 0.5,
+  scope 0.25. So the same sight zooms the same on every gun.
+- The sniper on iron sights gets the plain iron sight zoom (0.85) like every
+  other gun (decided). Its default sight stays as it is.
+- Aim sensitivity already follows `zoom()`, so it needs no change. Check
+  everything else that reads `zoom` (bots, third person, the loadout
+  preview), and the help text in `src/ui.rs` if it mentions zoom.
+
+## 9. Air strafe tuning (#5)
+
+- Play against the videos in discussion #5 and tune `AIR_WISH_SPEED` and
+  `AIR_ACCEL` in `src/player.rs`.
+- Optional: a host setting for air acceleration in the lobby, sent to every
+  player (like `sv_airaccelerate`). Movement runs on each client, so the value
+  must reach all of them.
+
+## Later: surf ramps (#6)
+
+Not in this round. Notes for when it is picked up: the map is only upright boxes (`Block` in `src/map.rs`), and `move_and_slide`
+stops each axis that hits one, so a slope needs a new shape everywhere the map
+is used:
+
+- A ramp primitive (a wedge, or a box turned about one axis).
+- Player movement: slide along the surface (clip velocity to the plane). On a
+  slope steeper than about 45° there is no friction and you do not count as
+  standing, so air strafing keeps you on it.
+- Grenades (`step_grenade`), bullets (`raycast`), the server's checks and
+  bots' line of sight.
+- Drawing it, and a surf area in the map, maybe as its own test map first.
