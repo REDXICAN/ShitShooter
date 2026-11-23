@@ -91,7 +91,19 @@ Read the prototype first. Get the branch with
 Do not add the `prototypes/` folder to `main`.
 
 - Replaces `loadout_button`, `sight_button` and `grenade_button` in
-  `src/ui.rs`, in the pause menu and the lobby.
+  `src/ui.rs`, in the pause menu, the lobby and the death screen.
+- Death screen: today it is one line of text (`Hud::DeadLoadout`), the
+  weapon and grenade keys step forward through the choices (`while_dead` in
+  `src/player.rs`), and the mouse stays locked so a left click respawns. With
+  the card:
+  - Show the same card under the respawn countdown, 3D view included.
+  - Free the mouse while dead, so the arrows can be clicked. Lock it again on
+    respawn (`grab_cursor` in `src/player.rs`).
+  - Respawn now with a "Respawn" button under the card, or a left click
+    anywhere off the card. Say which in the countdown line.
+  - Keep the weapon and grenade keys as shortcuts.
+  - An automatic respawn at the end of the countdown closes the card. A pick
+    is saved at once, so nothing is lost.
 - A 3D view of the gun at the top, with its chosen sight on it.
 - Each slot has ‹ › arrows for the gun and small arrows for the sight; the
   grenade has ‹ ›. Pointing at an arrow previews the gun or sight it would
