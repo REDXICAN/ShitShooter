@@ -771,7 +771,7 @@ impl Server {
                     player.spawn_at = point;
                 }
             }
-            ClientMsg::Respawn if self.phase == Phase::Playing => {
+            ClientMsg::Respawn if self.phase == Phase::Playing && early_respawn(self.settings.mode) => {
                 if let Some(player) = self.players.get_mut(&id)
                     && !player.alive
                     && RESPAWN_DELAY - player.respawn_in >= MIN_RESPAWN_DELAY
@@ -2241,6 +2241,24 @@ mod tests {
         server.handle_message(id, ClientMsg::Respawn);
         tick(&mut server, 0.1);
         assert!(server.players[&id].alive, "asking to respawn did nothing");
+    }
+
+    #[test]
+    fn in_conquest_the_dead_wait_the_whole_delay() {
+        let mut server = conquest_with(0, &[0]);
+        server.damage(1000, 1000, 1000, KNIFE);
+        for _ in 0..60 * 2 {
+            server.update_match(1.0 / 60.0);
+        }
+        server.handle_message(1000, ClientMsg::Respawn);
+        for _ in 0..6 {
+            server.update_match(1.0 / 60.0);
+        }
+        assert!(!server.players[&1000].alive, "asking to respawn skipped the wait");
+        for _ in 0..(RESPAWN_DELAY * 60.0) as usize {
+            server.update_match(1.0 / 60.0);
+        }
+        assert!(server.players[&1000].alive, "not respawned after the delay");
     }
 
     #[test]

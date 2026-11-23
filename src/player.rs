@@ -554,9 +554,14 @@ fn handle_net(
 }
 
 /// Puts us back in now rather than at the end of `RESPAWN_DELAY`, if we have
-/// been dead long enough (see `MIN_RESPAWN_DELAY`).
-pub fn ask_respawn(player: &mut LocalPlayer, connection: &mut Connection) {
-    if !player.alive && player.killed_by.is_some() && !player.respawn_asked && player.dead_for >= MIN_RESPAWN_DELAY {
+/// been dead long enough (see `MIN_RESPAWN_DELAY`) and the mode allows it.
+pub fn ask_respawn(player: &mut LocalPlayer, connection: &mut Connection, mode: u8) {
+    if early_respawn(mode)
+        && !player.alive
+        && player.killed_by.is_some()
+        && !player.respawn_asked
+        && player.dead_for >= MIN_RESPAWN_DELAY
+    {
         player.respawn_asked = true;
         connection.send(&ClientMsg::Respawn);
     }

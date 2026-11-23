@@ -108,6 +108,7 @@ impl Plugin for UiPlugin {
                         update_scope_view,
                         update_damage_arcs,
                         update_choke_ring,
+                        show_respawn_button,
                     )
                         .run_if(in_state(AppState::Playing)),
                 ),
@@ -1716,8 +1717,20 @@ struct DeathScreen;
 #[derive(Component)]
 struct RespawnButton;
 
-fn on_respawn_button(_: On<Activate>, mut player: ResMut<LocalPlayer>, mut connection: ResMut<Connection>) {
-    ask_respawn(&mut player, &mut connection);
+fn on_respawn_button(
+    _: On<Activate>,
+    session: Res<Session>,
+    mut player: ResMut<LocalPlayer>,
+    mut connection: ResMut<Connection>,
+) {
+    ask_respawn(&mut player, &mut connection, session.mode);
+}
+
+/// No respawn button where there is no respawning early (conquest).
+fn show_respawn_button(session: Res<Session>, mut button: Query<&mut Node, With<RespawnButton>>) {
+    for mut node in &mut button {
+        set_shown(&mut node, early_respawn(session.mode));
+    }
 }
 
 /// A left click on the death screen respawns us, unless it is on the card
@@ -1727,13 +1740,14 @@ fn on_death_screen_click(
     click: On<PointerClick>,
     parents: Query<&ChildOf>,
     keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
+    session: Res<Session>,
     mut player: ResMut<LocalPlayer>,
     mut connection: ResMut<Connection>,
 ) {
     let target = click.original_event_target();
     let on_card = std::iter::once(target).chain(parents.iter_ancestors(target)).any(|entity| keep.contains(entity));
     if click.button == PointerButton::Primary && !on_card {
-        ask_respawn(&mut player, &mut connection);
+        ask_respawn(&mut player, &mut connection, session.mode);
     }
 }
 
@@ -1847,7 +1861,11 @@ fn update_hud(
                     "Respawning...".to_string()
                 } else {
                     let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
-                    format!("Respawning in {left:.0}  -  click off the card to respawn now")
+                    if early_respawn(session.mode) {
+                        format!("Respawning in {left:.0}  -  click off the card to respawn now")
+                    } else {
+                        format!("Respawning in {left:.0}")
+                    }
                 };
                 (message, TEXT)
             }

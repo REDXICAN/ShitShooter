@@ -87,6 +87,12 @@ pub const HILL_EMPTY: u8 = 0;
 pub const HILL_HELD: u8 = 1;
 pub const HILL_CONTESTED: u8 = 3;
 
+/// A dead player may ask to come back before `RESPAWN_DELAY` is up, except
+/// in conquest, where every death costs the team the whole wait.
+pub fn early_respawn(mode: u8) -> bool {
+    mode != MODE_CONQUEST
+}
+
 pub fn is_team_mode(mode: u8) -> bool {
     mode != MODE_FFA
 }
