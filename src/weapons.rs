@@ -210,7 +210,7 @@ pub const WEAPONS: [Weapon; 6] = [
         size: [0.04, 0.06, 0.2],
         sight_relief: 0.08,
         pitch: 1.3,
-        kick_up: 0.012,
+        kick_up: 0.018,
         kick_side: 0.007,
         headshot: 1.6,
         model: Some(Model {
