@@ -4,7 +4,10 @@
 use std::{path::PathBuf, time::SystemTime};
 
 use bevy::{
+    camera::NormalizedRenderTarget,
+    picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     prelude::*,
+    window::{PrimaryWindow, WindowRef},
     ui_widgets::{SetSliderValue, Slider, SliderValueChange},
     render::view::screenshot::{Screenshot, save_to_disk},
 };
@@ -17,10 +20,11 @@ use crate::{
     player::{Controls, LocalPlayer, PlayerSystems},
     protocol::ClientMsg,
     map::PLAYER_HALF,
+    loadout::{LoadoutArrow, Slot},
     remote::{Corpse, RemotePlayer},
     weapons::{SHOTGUN, weapon},
     world::GameMap,
-    settings::SettingsMenu,
+    settings::{Settings, SettingsMenu},
 };
 
 pub struct DevToolsPlugin;
@@ -134,6 +138,10 @@ fn selftest_lobby(
     mut editor: ResMut<PaintEditor>,
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
+    settings: Res<Settings>,
+    arrows: Query<(&LoadoutArrow, &UiGlobalTransform, &ComputedNode)>,
+    window: Single<Entity, With<PrimaryWindow>>,
+    mut pointer: MessageWriter<PointerInput>,
 ) {
     test.clock += time.delta_secs();
     // The second visit to the lobby is after the match was ended: we are done.
@@ -185,9 +193,62 @@ fn selftest_lobby(
     if test.reached(5, 3.3) {
         editor.open = false;
     }
+    // The loadout card, with the pointer: on the primary's next arrow (the
+    // stage shows what it would give), a click, and back with the other arrow.
     if test.reached(6, 3.8) {
+        point(&arrows, *window, &mut pointer, Some(1), false);
+    }
+    if test.reached(7, 4.2) {
+        test.capture(&mut commands, "lobby_hover.png");
+    }
+    if test.reached(8, 4.4) {
+        point(&arrows, *window, &mut pointer, Some(1), true);
+    }
+    if test.reached(9, 4.7) {
+        println!("[selftest] after a click on the primary's next arrow: {}", weapon(settings.primary).name);
+        test.capture(&mut commands, "lobby_clicked.png");
+    }
+    // Picking sees where the pointer is a frame after it moves there.
+    if test.reached(10, 4.8) {
+        point(&arrows, *window, &mut pointer, Some(-1), false);
+    }
+    if test.reached(11, 4.9) {
+        point(&arrows, *window, &mut pointer, Some(-1), true);
+    }
+    if test.reached(12, 5.2) {
+        println!("[selftest] and on its back arrow: {}", weapon(settings.primary).name);
+        point(&arrows, *window, &mut pointer, None, false);
+    }
+    if test.reached(13, 5.6) {
         println!("[selftest] roster: {:?}", session.roster.iter().map(|p| &p.name).collect::<Vec<_>>());
         connection.send(&ClientMsg::StartMatch);
+    }
+}
+
+/// Moves the pointer onto the primary gun's arrow that steps by `step` (or
+/// off to a corner, for `None`), and clicks there if `click`. A click only
+/// lands on what was under the pointer the frame before.
+fn point(
+    arrows: &Query<(&LoadoutArrow, &UiGlobalTransform, &ComputedNode)>,
+    window: Entity,
+    pointer: &mut MessageWriter<PointerInput>,
+    step: Option<i32>,
+    click: bool,
+) {
+    let arrow = arrows
+        .iter()
+        .find(|(arrow, ..)| arrow.slot == Slot::Gun(0) && !arrow.sight && Some(arrow.step) == step);
+    let position = arrow.map_or(Vec2::splat(5.0), |(_, at, node)| at.translation * node.inverse_scale_factor);
+    let location = Location {
+        target: NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
+        position,
+    };
+    let mut actions = vec![PointerAction::Move { delta: Vec2::ZERO }];
+    if click {
+        actions.extend([PointerAction::Press(PointerButton::Primary), PointerAction::Release(PointerButton::Primary)]);
+    }
+    for action in actions {
+        pointer.write(PointerInput::new(PointerId::Mouse, location.clone(), action));
     }
 }
 
@@ -242,6 +303,10 @@ fn selftest_play(
     if player.hit_marker > 0.0 && !captured.marker {
         captured.marker = true;
         test.capture(&mut commands, "hit.png");
+    }
+    if player.on_death_screen() && player.dead_for > 1.0 && controls.captured && !settings_menu.open && !captured.dead {
+        captured.dead = true;
+        test.capture(&mut commands, "dead.png");
     }
     if let Some(arc) = player.damage_arcs.first()
         && !captured.hurt
@@ -465,6 +530,7 @@ struct Captured {
     countdown: bool,
     ally: bool,
     hurt: bool,
+    dead: bool,
     /// The first body to fall, and how many pictures of it have been taken.
     body: Option<Entity>,
     body_shots: usize,

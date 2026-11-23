@@ -343,11 +343,21 @@ pub fn weapon_name(id: WeaponId) -> &'static str {
 
 /// The gun after `current` in the list, skipping the one in the other slot.
 pub fn next_gun(current: WeaponId, other_slot: WeaponId) -> WeaponId {
-    let mut next = (current + 1) % GUN_COUNT;
-    if next == other_slot {
-        next = (next + 1) % GUN_COUNT;
+    step_gun(current, other_slot, 1)
+}
+
+/// The gun `step` places after `current` in the list (before it, for a
+/// negative step), going round, and skipping the one in the other slot.
+pub fn step_gun(current: WeaponId, other_slot: WeaponId, step: i32) -> WeaponId {
+    let count = GUN_COUNT as i32;
+    let mut gun = current as i32;
+    for _ in 0..step.unsigned_abs() {
+        gun = (gun + step.signum()).rem_euclid(count);
+        if gun == other_slot as i32 {
+            gun = (gun + step.signum()).rem_euclid(count);
+        }
     }
-    next
+    gun as WeaponId
 }
 
 #[cfg(test)]
@@ -363,6 +373,16 @@ mod tests {
             assert!(gun.aim_spread <= gun.hip_spread, "{}", gun.name);
             if let Some(choke) = &gun.choke {
                 assert!(choke.spread < gun.aim_spread && choke.time > 0.0, "{}", gun.name);
+            }
+        }
+    }
+
+    #[test]
+    fn stepping_back_undoes_stepping_forward() {
+        for other in 0..GUN_COUNT {
+            for gun in (0..GUN_COUNT).filter(|&gun| gun != other) {
+                assert_eq!(step_gun(step_gun(gun, other, 1), other, -1), gun);
+                assert_ne!(step_gun(gun, other, -1), other);
             }
         }
     }

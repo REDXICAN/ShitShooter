@@ -24,7 +24,7 @@ use crate::{
     player::Controls,
     protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
-        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, WeaponId, next_gun, sight,
+        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, WeaponId, next_gun, sight, step_gun,
         sight_on, sights_for, takes_sights, weapon,
     },
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
@@ -424,10 +424,16 @@ impl Settings {
 
     /// Puts the next gun in a slot (0 = primary, 1 = secondary).
     pub fn cycle_gun(&mut self, slot: usize) {
+        self.step_gun(slot, 1);
+    }
+
+    /// Puts the gun `step` places on in the list in a slot (back, for a
+    /// negative step), never the one in the other slot.
+    pub fn step_gun(&mut self, slot: usize, step: i32) {
         if slot == 0 {
-            self.primary = next_gun(self.primary, self.secondary);
+            self.primary = step_gun(self.primary, self.secondary, step);
         } else {
-            self.secondary = next_gun(self.secondary, self.primary);
+            self.secondary = step_gun(self.secondary, self.primary, step);
         }
     }
 
@@ -438,7 +444,12 @@ impl Settings {
 
     /// Picks the next kind of grenade to carry.
     pub fn cycle_grenade(&mut self) {
-        self.grenade = (self.grenade + 1) % GRENADE_KINDS as GrenadeKind;
+        self.step_grenade(1);
+    }
+
+    /// Picks the kind of grenade `step` places on (back, for a negative step).
+    pub fn step_grenade(&mut self, step: i32) {
+        self.grenade = (self.grenade as i32 + step).rem_euclid(GRENADE_KINDS as i32) as GrenadeKind;
     }
 
     /// The sight a gun is handed out with.
@@ -446,13 +457,15 @@ impl Settings {
         sight_on(gun, self.sights.get(gun as usize).copied().unwrap_or(IRON_SIGHTS))
     }
 
-    /// Puts the next sight the gun in a slot can take on it: its iron sights,
-    /// then each of `weapons::sights_for` in turn.
-    pub fn cycle_sight(&mut self, slot: usize) {
+    /// Puts the sight `step` places on (back, for a negative step) on the gun
+    /// in a slot, going round its iron sights, then each of
+    /// `weapons::sights_for` in turn.
+    pub fn step_sight(&mut self, slot: usize, step: i32) {
         let gun = self.gun(slot);
         let current = self.sight_for(gun);
         let choices: Vec<SightId> = std::iter::once(IRON_SIGHTS).chain(sights_for(gun).iter().copied()).collect();
-        let next = choices.iter().position(|&s| s == current).map_or(0, |i| (i + 1) % choices.len());
+        let here = choices.iter().position(|&s| s == current).unwrap_or(0) as i32;
+        let next = (here + step).rem_euclid(choices.len() as i32) as usize;
         if let Some(sight) = self.sights.get_mut(gun as usize) {
             *sight = choices[next];
         }
@@ -1078,11 +1091,11 @@ mod tests {
         assert_eq!(settings.sight_for(smg), RED_DOT);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(RIFLE), RED_DOT, "the rifle's default");
-        settings.cycle_sight(0);
+        settings.step_sight(0, 1);
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
-        settings.cycle_sight(1);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(smg), REFLEX);
-        settings.cycle_sight(1);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
     }
 
@@ -1096,15 +1109,15 @@ sight.Pistol = Scope
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
         let mut seen = Vec::new();
         for _ in 0..4 {
-            settings.cycle_sight(0);
+            settings.step_sight(0, 1);
             seen.push(settings.sight_for(SNIPER));
         }
         assert_eq!(seen, [IRON_SIGHTS, RED_DOT, REFLEX, SCOPE]);
-        settings.cycle_sight(1);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), RED_DOT);
-        settings.cycle_sight(1);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), REFLEX);
-        settings.cycle_sight(1);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
     }
 

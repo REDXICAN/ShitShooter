@@ -6,7 +6,7 @@ use bevy::{
         FocusCause, InputFocus,
         tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
     },
-    picking::hover::Hovered,
+    picking::{hover::Hovered, pointer::PointerButton},
     prelude::*,
     text::{EditableText, TextCursorStyle, TextEdit},
     ui::Pressed,
@@ -22,23 +22,24 @@ use crate::{
     map::MAP_NAMES,
     net::{self, Connection, MenuStatus, Session},
     paint::{Skins, palette_color},
+    loadout::{LoadoutCard, loadout_card},
     paint_editor::on_open_paint,
-    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer},
+    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
-    weapons::{KNIFE, sight, takes_sights, weapon},
+    weapons::{KNIFE, weapon},
     world::{GameMap, MainCamera},
 };
 
 const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
 const PANEL_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
 /// A box inside a panel, a shade lighter than it.
-const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
+pub const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
 pub const BUTTON: Color = Color::srgb(0.16, 0.18, 0.24);
 const BUTTON_HOVER: Color = Color::srgb(0.25, 0.29, 0.40);
 const BUTTON_PRESS: Color = Color::srgb(0.95, 0.55, 0.15);
-const BUTTON_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
+pub const BUTTON_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
 /// The one button on a screen that moves things along.
 const PRIMARY: Color = Color::srgb(0.93, 0.53, 0.13);
 const PRIMARY_HOVER: Color = Color::srgb(1.0, 0.66, 0.28);
@@ -46,7 +47,7 @@ const PRIMARY_PRESS: Color = Color::srgb(1.0, 0.80, 0.50);
 /// Text on a primary button.
 const ON_PRIMARY: Color = Color::srgb(0.09, 0.07, 0.05);
 const DANGER_HOVER: Color = Color::srgb(0.62, 0.20, 0.18);
-const FIELD: Color = Color::srgb(0.10, 0.11, 0.15);
+pub const FIELD: Color = Color::srgb(0.10, 0.11, 0.15);
 const FIELD_EDGE: Color = Color::srgb(0.3, 0.33, 0.42);
 pub const TEXT: Color = Color::srgb(0.92, 0.93, 0.96);
 pub const DIM: Color = Color::srgb(0.60, 0.63, 0.70);
@@ -55,7 +56,7 @@ const DANGER: Color = Color::srgb(1.0, 0.35, 0.3);
 const GOOD: Color = Color::srgb(0.38, 0.86, 0.50);
 /// Behind the HUD's panels: see-through, so the game shows past them.
 const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
-const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
+pub const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 /// The empty part of a bar.
 const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
 /// Our team, wherever it shows: the outline around teammates, their names,
@@ -98,15 +99,14 @@ impl Plugin for UiPlugin {
                     update_menu_status.run_if(in_state(AppState::Menu)),
                     update_connecting.run_if(in_state(AppState::Connecting)),
                     update_lobby.run_if(in_state(AppState::Lobby)),
-                    update_loadout_buttons,
                     update_rosters,
+                    update_key_hints,
                     (
                         update_hud,
                         update_hud_shapes,
                         update_overlays,
                         update_crosshair,
                         update_scope_view,
-                        update_key_hints,
                         update_damage_arcs,
                         update_choke_ring,
                     )
@@ -354,7 +354,7 @@ pub fn set_text(text: &mut Mut<Text>, value: String) {
     }
 }
 
-fn set_shown(node: &mut Mut<Node>, shown: bool) {
+pub fn set_shown(node: &mut Mut<Node>, shown: bool) {
     let display = if shown { Display::Flex } else { Display::None };
     if node.display != display {
         node.display = display;
@@ -852,80 +852,6 @@ struct TeamModeOnly;
 #[derive(Component)]
 struct CopyLabel;
 
-/// The text of a button that shows, and changes, the gun in a slot.
-#[derive(Component)]
-struct LoadoutText(usize);
-
-/// A button that puts the next gun in a slot (0 = primary, 1 = secondary).
-fn loadout_button(slot: usize) -> impl Bundle {
-    (
-        button_box(ButtonKind::Normal, false),
-        children![(label("", 18.0, TEXT), Pickable::IGNORE, LoadoutText(slot))],
-        observe(move |_: On<Activate>, mut settings: ResMut<Settings>| {
-            settings.cycle_gun(slot);
-            settings.save();
-        }),
-    )
-}
-
-/// The text of a button that shows, and changes, the sight on the gun in a slot.
-#[derive(Component)]
-struct SightText(usize);
-
-/// A button that puts the next sight on the gun in a slot.
-fn sight_button(slot: usize) -> impl Bundle {
-    (
-        button_box(ButtonKind::Normal, false),
-        children![(label("", 16.0, TEXT), Pickable::IGNORE, SightText(slot))],
-        observe(move |_: On<Activate>, mut settings: ResMut<Settings>| {
-            settings.cycle_sight(slot);
-            settings.save();
-        }),
-    )
-}
-
-/// The text of the button that shows, and changes, the grenade carried.
-#[derive(Component)]
-struct GrenadeText;
-
-/// A button that picks the next kind of grenade to carry.
-fn grenade_button() -> impl Bundle {
-    (
-        button_box(ButtonKind::Normal, false),
-        children![(label("", 18.0, TEXT), Pickable::IGNORE, GrenadeText)],
-        observe(|_: On<Activate>, mut settings: ResMut<Settings>| {
-            settings.cycle_grenade();
-            settings.save();
-        }),
-    )
-}
-
-fn update_loadout_buttons(
-    settings: Res<Settings>,
-    mut guns: Query<(&LoadoutText, &mut Text), (Without<SightText>, Without<GrenadeText>)>,
-    mut sights: Query<(&SightText, &mut Text), (Without<LoadoutText>, Without<GrenadeText>)>,
-    mut grenades: Query<&mut Text, (With<GrenadeText>, Without<LoadoutText>, Without<SightText>)>,
-) {
-    for mut text in &mut grenades {
-        set_text(&mut text, format!("Grenade: {}", grenade(settings.grenade).name));
-    }
-    for (slot, mut text) in &mut guns {
-        let title = if slot.0 == 0 { "Primary" } else { "Secondary" };
-        set_text(&mut text, format!("{title}: {}", weapon(settings.gun(slot.0)).name));
-    }
-    for (slot, mut text) in &mut sights {
-        let gun = settings.gun(slot.0);
-        set_text(
-            &mut text,
-            if takes_sights(gun) {
-                format!("Sight: {}", sight(settings.sight_for(gun)).name)
-            } else {
-                "No sight mount".to_string()
-            },
-        );
-    }
-}
-
 /// One line of the match settings: what it is, its value, and the buttons
 /// with which the leader changes it.
 fn match_row(caption: &str, value: LobbyText, buttons: impl Bundle) -> impl Bundle {
@@ -1017,7 +943,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                         Node {
                             flex_direction: FlexDirection::Column,
                             row_gap: px(14),
-                            width: px(350),
+                            width: px(330),
                             ..default()
                         },
                         children![
@@ -1043,20 +969,10 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                                     ),
                                 ],
                             ),
-                            (
-                                card(),
-                                children![
-                                    section("Loadout"),
-                                    loadout_button(0),
-                                    sight_button(0),
-                                    loadout_button(1),
-                                    sight_button(1),
-                                    grenade_button(),
-                                    (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
-                                ],
-                            ),
+                            (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
                         ],
                     ),
+                    loadout_card(320.0, CARD, label("Handed out when you spawn.", 14.0, DIM)),
                 ],
             ));
 
@@ -1138,12 +1054,14 @@ enum Hud {
     DashLabel,
     /// One line of the kill feed.
     Feed(usize),
-    /// Death and respawn message.
+    /// "Get ready" before our first spawn.
     Center,
-    /// Under it while dead: how long until we respawn, and how to do it now.
+    /// On the death screen: who killed us.
+    Killed,
+    /// Under it: how long until we respawn, and how to do it now.
     Respawn,
-    /// Under that: the loadout we will respawn with, and the keys that change it.
-    DeadLoadout,
+    /// Under the loadout on the death screen: the keys that change it.
+    DeadKeys,
     /// The name of the weapon in hand.
     WeaponTitle,
     Ammo,
@@ -1538,15 +1456,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ],
     ));
 
-    // Death / respawn message, a bit above the middle of the screen.
-    commands.spawn((
-        hud_line(30.0),
-        children![
-            hud_text(30.0, DANGER, Hud::Center),
-            hud_text(20.0, TEXT, Hud::Respawn),
-            hud_text(16.0, DIM, Hud::DeadLoadout),
-        ],
-    ));
+    // Before our first spawn, a bit above the middle of the screen.
+    commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
 
     // Kill announcements, a bit below it.
     commands.spawn((
@@ -1637,8 +1548,10 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
-    // Speed and dash, bottom middle.
+    // Speed and dash, bottom middle. Hidden on the death screen, which
+    // reaches down to it.
     commands.spawn((
+        SpeedPanel,
         hud_anchor(Node {
             width: percent(100),
             bottom: px(22),
@@ -1724,6 +1637,39 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
+    // The death screen: who got us, when we respawn, and the loadout we will
+    // respawn with. The mouse is free while it shows, so the loadout can be
+    // changed; a click anywhere off the card respawns us.
+    commands.spawn((
+        DeathScreen,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            // Clear of the clock and scores at the top.
+            padding: UiRect::top(px(100)),
+            row_gap: px(8),
+            display: Display::None,
+            ..default()
+        },
+        DespawnOnExit(AppState::Playing),
+        observe(on_death_screen_click),
+        children![
+            hud_text(30.0, DANGER, Hud::Killed),
+            hud_text(20.0, TEXT, Hud::Respawn),
+            (
+                Node {
+                    margin: UiRect::top(px(6)),
+                    ..default()
+                },
+                children![loadout_card(320.0, PANEL, hud_text(14.0, DIM, Hud::DeadKeys))],
+            ),
+            (primary_button("Respawn"), RespawnButton, observe(on_respawn_button)),
+        ],
+    ));
+
     commands.spawn((
         hud_layer(),
         ScoreboardPanel,
@@ -1793,22 +1739,10 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                             }
                         });
                         // Side by side rather than stacked, so it all fits a 720p window.
-                        cards.spawn((
-                            Node {
-                                width: px(300),
-                                ..card_node()
-                            },
-                            BackgroundColor(CARD),
-                            BorderColor::all(HUD_EDGE),
-                            children![
-                                section("Loadout"),
-                                loadout_button(0),
-                                sight_button(0),
-                                loadout_button(1),
-                                sight_button(1),
-                                grenade_button(),
-                                label("Handed out the next time you spawn.", 14.0, DIM),
-                            ],
+                        cards.spawn(loadout_card(
+                            300.0,
+                            CARD,
+                            label("Handed out the next time you spawn.", 14.0, DIM),
                         ));
                         cards.spawn((
                             Node {
@@ -1851,7 +1785,7 @@ const KEY_HINTS: &[(&[Action], &str)] = &[
 
 /// The name of the key an action is bound to, in a little box.
 #[derive(Component)]
-struct KeyHint(Action);
+pub struct KeyHint(pub Action);
 
 fn key_chip(action: Action) -> impl Bundle {
     (
@@ -1880,6 +1814,37 @@ fn update_key_hints(
     }
     for (hint, mut text) in &mut hints {
         set_text(&mut text, settings.key_names(hint.0));
+    }
+}
+
+#[derive(Component)]
+struct SpeedPanel;
+
+/// The death screen (see `spawn_hud`).
+#[derive(Component)]
+struct DeathScreen;
+
+#[derive(Component)]
+struct RespawnButton;
+
+fn on_respawn_button(_: On<Activate>, mut player: ResMut<LocalPlayer>, mut connection: ResMut<Connection>) {
+    ask_respawn(&mut player, &mut connection);
+}
+
+/// A left click on the death screen respawns us, unless it is on the card
+/// (or on the button, which does that itself). The click bubbles up to the
+/// screen from whatever was under the pointer.
+fn on_death_screen_click(
+    click: On<PointerClick>,
+    parents: Query<&ChildOf>,
+    keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>)>>,
+    mut player: ResMut<LocalPlayer>,
+    mut connection: ResMut<Connection>,
+) {
+    let target = click.original_event_target();
+    let on_card = std::iter::once(target).chain(parents.iter_ancestors(target)).any(|entity| keep.contains(entity));
+    if click.button == PointerButton::Primary && !on_card {
+        ask_respawn(&mut player, &mut connection);
     }
 }
 
@@ -1984,40 +1949,28 @@ fn update_hud(
                 None => (String::new(), TEXT),
             },
             Hud::Center => {
-                let message = match (&player.killed_by, player.alive) {
-                    (_, true) => String::new(),
-                    (Some(killer), false) => format!("Fragged by {killer}"),
-                    (None, false) => "Get ready...".to_string(),
-                };
-                (message, DANGER)
+                let ready = !player.alive && player.killed_by.is_none();
+                (if ready { "Get ready..." } else { "" }.to_string(), DANGER)
             }
+            Hud::Killed => (format!("Fragged by {}", player.killed_by.as_deref().unwrap_or("?")), DANGER),
             Hud::Respawn => {
-                let message = if player.alive || player.killed_by.is_none() {
-                    String::new()
-                } else if player.respawn_asked {
+                let message = if player.respawn_asked {
                     "Respawning...".to_string()
                 } else {
                     let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
-                    format!("Respawning in {left:.0}  -  {} to respawn now", settings.key_name(Action::Fire))
+                    format!("Respawning in {left:.0}  -  click off the card to respawn now")
                 };
                 (message, TEXT)
             }
-            Hud::DeadLoadout => {
-                let message = if player.alive || player.killed_by.is_none() {
-                    String::new()
-                } else {
-                    format!(
-                        "[{}] {}    [{}] {}    [{}] {}",
-                        settings.key_name(Action::Primary),
-                        weapon(settings.primary).name,
-                        settings.key_name(Action::Secondary),
-                        weapon(settings.secondary).name,
-                        settings.key_name(Action::Grenade),
-                        grenade(settings.grenade).name,
-                    )
-                };
-                (message, DIM)
-            }
+            Hud::DeadKeys => (
+                format!(
+                    "{} / {} / {} also step through them.",
+                    settings.key_name(Action::Primary),
+                    settings.key_name(Action::Secondary),
+                    settings.key_name(Action::Grenade),
+                ),
+                DIM,
+            ),
             Hud::WeaponTitle => {
                 if gun.is_some() && player.reloading() {
                     ("RELOADING".to_string(), ACCENT)
@@ -2369,6 +2322,8 @@ fn update_overlays(
         Single<&mut Node, With<ScoreboardPanel>>,
         Single<&mut Node, With<PausePanel>>,
         Query<&mut Node, With<LeaderOnly>>,
+        Single<&mut Node, With<DeathScreen>>,
+        Single<&mut Node, With<SpeedPanel>>,
     )>,
     mut scoreboard_title: Single<&mut Text, With<ScoreboardText>>,
 ) {
@@ -2396,6 +2351,8 @@ fn update_overlays(
 
     let paused = !controls.captured;
     let show_scores = input.pressed(Action::Scores);
+    set_shown(&mut nodes.p3(), player.on_death_screen());
+    set_shown(&mut nodes.p4(), !player.on_death_screen());
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);
     for mut node in &mut nodes.p2() {

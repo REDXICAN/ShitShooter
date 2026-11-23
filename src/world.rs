@@ -92,7 +92,7 @@ pub struct SharedAssets {
 }
 
 /// The grenade models, indexed by `GrenadeKind`. Made by `art/grenades.py`.
-const GRENADE_MODELS: [&str; GRENADE_KINDS] = [
+pub const GRENADE_MODELS: [&str; GRENADE_KINDS] = [
     "models/grenades/frag.glb",
     "models/grenades/flash.glb",
     "models/grenades/smoke.glb",

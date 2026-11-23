@@ -119,10 +119,7 @@ impl Plugin for PlayerPlugin {
                         .chain()
                         .in_set(PlayerSystems::Simulate)
                         .run_if(in_state(AppState::Playing)),
-                    while_dead
-                        .after(toggle_pause)
-                        .run_if(in_state(AppState::Playing))
-                        .run_if(resource_exists::<Connection>),
+                    while_dead.after(toggle_pause).run_if(in_state(AppState::Playing)),
                     follow_camera
                         .in_set(PlayerSystems::Camera)
                         .run_if(in_state(AppState::Playing)),
@@ -505,33 +502,38 @@ fn handle_net(
     }
 }
 
-/// While dead: a click respawns us at once instead of at the end of
-/// `RESPAWN_DELAY`, and the weapon and grenade keys change the loadout we
-/// will be handed when we do.
-fn while_dead(
-    time: Res<Time>,
-    mut player: ResMut<LocalPlayer>,
-    mut connection: ResMut<Connection>,
-    mut input: ParamSet<(ActionInput, ResMut<Settings>)>,
-) {
+/// Puts us back in now rather than at the end of `RESPAWN_DELAY`, if we have
+/// been dead long enough (see `MIN_RESPAWN_DELAY`).
+pub fn ask_respawn(player: &mut LocalPlayer, connection: &mut Connection) {
+    if !player.alive && player.killed_by.is_some() && !player.respawn_asked && player.dead_for >= MIN_RESPAWN_DELAY {
+        player.respawn_asked = true;
+        connection.send(&ClientMsg::Respawn);
+    }
+}
+
+impl LocalPlayer {
+    /// Showing the death screen: dead, and not yet put back in.
+    pub fn on_death_screen(&self) -> bool {
+        !self.alive && self.killed_by.is_some()
+    }
+}
+
+/// While dead the death screen shows (see `ui.rs`), and the weapon and
+/// grenade keys step through the loadout we will be handed when we respawn.
+fn while_dead(time: Res<Time>, mut player: ResMut<LocalPlayer>, mut input: ParamSet<(ActionInput, ResMut<Settings>)>) {
     // Before our first spawn there is no death screen.
-    if player.alive || player.killed_by.is_none() {
+    if !player.on_death_screen() {
         return;
     }
     player.dead_for += time.delta_secs();
-    let (respawn, primary, secondary, grenade) = {
+    let (primary, secondary, grenade) = {
         let input = input.p0();
         (
-            input.just_pressed(Action::Fire),
             input.just_pressed(Action::Primary),
             input.just_pressed(Action::Secondary),
             input.just_pressed(Action::Grenade),
         )
     };
-    if respawn && !player.respawn_asked && player.dead_for >= MIN_RESPAWN_DELAY {
-        player.respawn_asked = true;
-        connection.send(&ClientMsg::Respawn);
-    }
     if primary || secondary || grenade {
         let mut settings = input.p1();
         if primary {
@@ -948,13 +950,18 @@ fn orbit_camera(
 fn grab_cursor(
     state: Res<State<AppState>>,
     controls: Res<Controls>,
+    player: Res<LocalPlayer>,
     args: Res<crate::LaunchArgs>,
     mut focus: MessageReader<WindowFocused>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut cursor: Single<&mut CursorOptions>,
 ) {
-    // The scripted self-test must not steal the developer's mouse.
-    let grab = *state.get() == AppState::Playing && controls.captured && args.selftest.is_none();
+    // Free on the death screen, to change the loadout. The scripted self-test
+    // must not steal the developer's mouse.
+    let grab = *state.get() == AppState::Playing
+        && controls.captured
+        && !player.on_death_screen()
+        && args.selftest.is_none();
     let mode = if grab {
         CursorGrabMode::Locked
     } else {

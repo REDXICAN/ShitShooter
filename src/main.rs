@@ -13,6 +13,7 @@ mod combat;
 mod devtools;
 mod grenade;
 mod gun_model;
+mod loadout;
 mod map;
 mod net;
 mod paint;
@@ -199,6 +200,7 @@ fn main() {
             paint::PaintPlugin,
             paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,
+            loadout::LoadoutPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,
             ui::UiPlugin,

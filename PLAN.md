@@ -43,7 +43,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 1. [x] Damage direction (#2)
 2. [x] Bodies stay after death (#3)
 3. [x] Shotgun choke when aiming (#7, part 1)
-4. [ ] Loadout menu, layout 1 (PR #4)
+4. [x] Loadout menu, layout 1 (PR #4)
 5. [ ] Weapon panel, type 1 with the ring reload (PR #4)
 6. [ ] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
 7. [ ] Reload animations on the guns
