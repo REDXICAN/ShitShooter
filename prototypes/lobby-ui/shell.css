@@ -1,0 +1,401 @@
+:root {
+  --panel: rgba(13, 15, 23, 0.93);
+  --panel-edge: rgba(255, 255, 255, 0.1);
+  --card: rgba(255, 255, 255, 0.04);
+  --button: #292e3d;
+  --button-hover: #404a66;
+  --button-press: #f28c26;
+  --button-edge: rgba(255, 255, 255, 0.07);
+  --primary: #ed8721;
+  --primary-hover: #ffa847;
+  --on-primary: #17120d;
+  --danger-hover: #9e332e;
+  --field: #1a1c26;
+  --field-edge: #4d546b;
+  --text: #ebedf5;
+  --dim: #99a1b3;
+  --accent: #ff9e33;
+  --danger: #ff594d;
+  --good: #61db80;
+  --hud-edge: rgba(255, 255, 255, 0.09);
+  --track: rgba(255, 255, 255, 0.12);
+  --active: #363b4a;
+  --game-font: "Fira Mono", Consolas, "Courier New", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: #03050a;
+  color: #d8dce6;
+  font: 13px/1.3 system-ui, "Segoe UI", sans-serif;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 10px 16px;
+  background: #10131b;
+  border-bottom: 1px solid #222837;
+}
+
+.bar-title {
+  font-size: 14px;
+  color: #fff;
+}
+
+.bar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bar-group span {
+  margin-right: 4px;
+  color: #8b93a6;
+}
+
+.bar button {
+  font: inherit;
+  color: #d8dce6;
+  padding: 4px 10px;
+  background: #1c2130;
+  border: 1px solid #2c3346;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.bar button:hover {
+  background: #283048;
+}
+
+.bar button.is-on {
+  color: #17120d;
+  background: #ed8721;
+  border-color: transparent;
+}
+
+.bar-fit {
+  margin-left: auto;
+  color: #61db80;
+}
+
+.bar-hint {
+  margin-left: 6px;
+  color: #8b93a6;
+}
+
+.bar-fit.is-bad {
+  color: #ff594d;
+}
+
+.viewport {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+}
+
+.stage {
+  position: absolute;
+  overflow: hidden;
+  transform-origin: 0 0;
+  font-family: var(--game-font);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(165deg, #0b1020 0%, #161b2c 50%, #090c14 100%);
+}
+
+.scene i {
+  position: absolute;
+  display: block;
+}
+
+.scene .s1 {
+  left: -10%;
+  top: 38%;
+  width: 120%;
+  height: 70%;
+  background: #1d2336;
+  transform: skewY(-9deg);
+}
+
+.scene .s2 {
+  right: -6%;
+  top: 22%;
+  width: 22%;
+  height: 90%;
+  background: #6d7387;
+  transform: skewX(-14deg);
+}
+
+.scene .s3 {
+  left: 30%;
+  top: 52%;
+  width: 7%;
+  height: 7%;
+  background: #8a5638;
+  transform: skew(-20deg, 6deg);
+}
+
+.scene .s4 {
+  right: 9%;
+  top: 48%;
+  width: 9%;
+  height: 22%;
+  background: #a479c2;
+  transform: skewY(12deg);
+}
+
+.scene .s5 {
+  left: 44%;
+  top: 46%;
+  width: 11%;
+  height: 8%;
+  background: #4a6f97;
+  transform: skew(-30deg, 4deg);
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screen[hidden] {
+  display: none;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 26px 30px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+}
+
+.title {
+  margin: 0;
+  font-size: 36px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.screen-lobby .title {
+  font-size: 40px;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn {
+  font: inherit;
+  font-size: 18px;
+  color: var(--text);
+  padding: 9px 18px;
+  background: var(--button);
+  border: 1px solid var(--button-edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--button-hover);
+}
+
+.btn-primary {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-danger:hover {
+  background: var(--danger-hover);
+}
+
+.cards {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--card);
+  border: 1px solid var(--hud-edge);
+  border-radius: 8px;
+}
+
+.section {
+  font-size: 13px;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+}
+
+.ctl span {
+  margin-left: 4px;
+  color: var(--dim);
+}
+
+.ctl kbd,
+.roster-head span {
+  font: inherit;
+}
+
+.ctl kbd {
+  min-width: 28px;
+  padding: 2px 7px;
+  font-size: 14px;
+  text-align: center;
+  background: var(--button);
+  border: 1px solid var(--button-edge);
+  border-radius: 4px;
+}
+
+.pause-loadout-card {
+  width: 300px;
+}
+
+.tips {
+  width: 260px;
+}
+
+.tips p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.lobby-address {
+  font-size: 16px;
+}
+
+.lobby-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 462px 350px;
+  grid-template-areas: "players match" "players loadout";
+  align-items: start;
+}
+
+.players {
+  grid-area: players;
+  align-self: stretch;
+}
+
+.match {
+  grid-area: match;
+  align-self: stretch;
+}
+
+.lobby-loadout-card {
+  grid-area: loadout;
+  align-self: stretch;
+}
+
+.roster-head,
+.roster-row {
+  display: grid;
+  grid-template-columns: 14px 1fr 70px 70px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+}
+
+.roster-head {
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.roster-head span:nth-child(n + 3),
+.roster-row b {
+  text-align: right;
+}
+
+.roster-row {
+  font-size: 18px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.roster-row.is-me {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--accent);
+}
+
+.roster-row i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.roster-row em {
+  margin-left: 8px;
+  font-size: 12px;
+  font-style: normal;
+  color: var(--accent);
+}
+
+.roster-row b.dim {
+  font-weight: 500;
+}
+
+.match-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 30px;
+  font-size: 16px;
+}
+
+.match-row span {
+  color: var(--dim);
+}
+
+.info {
+  font-size: 17px;
+  color: var(--accent);
+  text-align: center;
+}
