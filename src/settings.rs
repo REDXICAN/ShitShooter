@@ -6,7 +6,15 @@
 use std::path::PathBuf;
 
 use bevy::{
-    audio::Volume, ecs::system::SystemParam, input_focus::InputFocus, picking::hover::Hovered, prelude::*,
+    audio::Volume,
+    ecs::system::SystemParam,
+    input::{
+        InputSystems,
+        mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    },
+    input_focus::InputFocus,
+    picking::hover::Hovered,
+    prelude::*,
     ui_widgets::{Activate, Button},
     window::{PrimaryWindow, WindowMode},
 };
@@ -41,6 +49,8 @@ impl Plugin for SettingsPlugin {
         }
         app.insert_resource(settings)
             .init_resource::<SettingsMenu>()
+            .init_resource::<WheelSteps>()
+            .add_systems(PreUpdate, read_wheel.after(InputSystems))
             .add_systems(OnExit(AppState::Playing), close_menu)
             .add_systems(
                 Update,
@@ -77,11 +87,13 @@ pub enum Action {
     Primary,
     Secondary,
     Knife,
+    NextWeapon,
+    PreviousWeapon,
     Scores,
 }
 
 impl Action {
-    pub const ALL: [Action; 15] = [
+    pub const ALL: [Action; 17] = [
         Action::Forward,
         Action::Back,
         Action::Left,
@@ -96,12 +108,14 @@ impl Action {
         Action::Primary,
         Action::Secondary,
         Action::Knife,
+        Action::NextWeapon,
+        Action::PreviousWeapon,
         Action::Scores,
     ];
 
     /// (name in the settings panel, name in the settings file, default binding)
     fn info(self) -> (&'static str, &'static str, Bind) {
-        use Bind::{Key, Mouse};
+        use Bind::{Key, Mouse, WheelDown, WheelUp};
         match self {
             Action::Forward => ("Move forward", "forward", Key(KeyCode::KeyW)),
             Action::Back => ("Move back", "back", Key(KeyCode::KeyS)),
@@ -117,6 +131,8 @@ impl Action {
             Action::Primary => ("Primary gun", "primary", Key(KeyCode::Digit1)),
             Action::Secondary => ("Secondary gun", "secondary", Key(KeyCode::Digit2)),
             Action::Knife => ("Knife", "knife", Key(KeyCode::Digit3)),
+            Action::NextWeapon => ("Next weapon", "next_weapon", WheelDown),
+            Action::PreviousWeapon => ("Previous weapon", "previous_weapon", WheelUp),
             Action::Scores => ("Scoreboard", "scores", Key(KeyCode::Tab)),
         }
     }
@@ -130,6 +146,9 @@ impl Action {
 pub enum Bind {
     Key(KeyCode),
     Mouse(MouseButton),
+    /// One notch of the scroll wheel: "pressed" for the frame it turns.
+    WheelUp,
+    WheelDown,
 }
 
 /// Keys that can be bound. Escape (pause) and F12 (screenshot) are reserved.
@@ -170,10 +189,17 @@ impl Bind {
                 .find(|(b, _)| *b == button)
                 .map_or("MouseLeft", |(_, name)| name)
                 .to_string(),
+            Bind::WheelUp => "WheelUp".to_string(),
+            Bind::WheelDown => "WheelDown".to_string(),
         }
     }
 
     fn parse(name: &str) -> Option<Bind> {
+        match name {
+            "WheelUp" => return Some(Bind::WheelUp),
+            "WheelDown" => return Some(Bind::WheelDown),
+            _ => {}
+        }
         if let Some((button, _)) = BINDABLE_BUTTONS.iter().find(|(_, n)| *n == name) {
             return Some(Bind::Mouse(*button));
         }
@@ -189,6 +215,8 @@ impl Bind {
         let spaced = |rest: &str, prefix: &str| format!("{prefix} {}", rest.to_uppercase());
         if let Some(rest) = name.strip_prefix("Mouse") {
             spaced(rest, "MOUSE")
+        } else if let Some(rest) = name.strip_prefix("Wheel") {
+            spaced(rest, "WHEEL")
         } else if let Some(rest) = name.strip_prefix("Key").or(name.strip_prefix("Digit")) {
             rest.to_string()
         } else if let Some(rest) = name.strip_prefix("Numpad") {
@@ -505,6 +533,7 @@ fn settings_path() -> Option<PathBuf> {
 pub struct ActionInput<'w> {
     keys: Res<'w, ButtonInput<KeyCode>>,
     mouse: Res<'w, ButtonInput<MouseButton>>,
+    wheel: Res<'w, WheelSteps>,
     settings: Res<'w, Settings>,
     controls: Res<'w, Controls>,
 }
@@ -515,6 +544,7 @@ impl ActionInput<'_> {
             && match self.settings.bind(action) {
                 Bind::Key(key) => self.keys.pressed(key),
                 Bind::Mouse(button) => self.mouse.pressed(button),
+                wheel => self.wheel.step == Some(wheel),
             }
     }
 
@@ -523,7 +553,35 @@ impl ActionInput<'_> {
             && match self.settings.bind(action) {
                 Bind::Key(key) => self.keys.just_pressed(key),
                 Bind::Mouse(button) => self.mouse.just_pressed(button),
+                wheel => self.wheel.step == Some(wheel),
             }
+    }
+}
+
+/// The scroll wheel turned into notches: `step` is the one this frame, if any.
+#[derive(Resource, Default)]
+pub struct WheelSteps {
+    step: Option<Bind>,
+    /// Scrolled since the last notch. Smooth scrolling (touchpads, free-spinning
+    /// wheels) comes in small amounts that add up to a notch.
+    owed: f32,
+}
+
+/// At most one notch a frame, so a hard flick does not race through every weapon.
+fn read_wheel(scroll: Res<AccumulatedMouseScroll>, mut wheel: ResMut<WheelSteps>) {
+    let (delta, notch) = match scroll.unit {
+        MouseScrollUnit::Line => (scroll.delta.y, 1.0),
+        MouseScrollUnit::Pixel => (scroll.delta.y, 40.0),
+    };
+    // Turning the other way starts afresh.
+    if delta * wheel.owed < 0.0 {
+        wheel.owed = 0.0;
+    }
+    wheel.owed += delta;
+    wheel.step = None;
+    if wheel.owed.abs() >= notch * 0.99 {
+        wheel.step = Some(if wheel.owed > 0.0 { Bind::WheelUp } else { Bind::WheelDown });
+        wheel.owed = (wheel.owed.abs() - notch).clamp(0.0, notch) * wheel.owed.signum();
     }
 }
 
@@ -582,6 +640,7 @@ fn escape_key(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<SettingsMenu>) {
 fn capture_bind(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    wheel: Res<WheelSteps>,
     mut menu: ResMut<SettingsMenu>,
     mut settings: ResMut<Settings>,
 ) {
@@ -600,7 +659,7 @@ fn capture_bind(
         .get_just_pressed()
         .find(|button| BINDABLE_BUTTONS.iter().any(|(b, _)| b == *button))
         .map(|button| Bind::Mouse(*button));
-    if let Some(bind) = key.or(button) {
+    if let Some(bind) = key.or(button).or(wheel.step) {
         settings.set_bind(capture.action, bind);
         menu.capturing = None;
     }
@@ -734,7 +793,7 @@ fn spawn_panel(commands: &mut Commands) {
                     card.spawn(ui::spread_row()).with_children(|heading| {
                         heading.spawn(ui::section("Controls"));
                         heading.spawn(ui::label(
-                            "Click a control, then press the key or mouse button for it.",
+                            "Click a control, then press the key or mouse button (or scroll) for it.",
                             14.0,
                             DIM,
                         ));
@@ -936,13 +995,25 @@ sight.Pistol = Scope
     fn every_binding_has_a_name_that_reads_back() {
         let keys = BINDABLE_KEYS.iter().map(|key| Bind::Key(*key));
         let buttons = BINDABLE_BUTTONS.iter().map(|(button, _)| Bind::Mouse(*button));
-        for bind in keys.chain(buttons) {
+        let wheel = [Bind::WheelUp, Bind::WheelDown];
+        for bind in keys.chain(buttons).chain(wheel) {
             assert_eq!(Bind::parse(&bind.file_name()), Some(bind));
             assert!(!bind.display().is_empty());
         }
         assert_eq!(Bind::Key(KeyCode::ShiftLeft).display(), "LEFT SHIFT");
         assert_eq!(Bind::Key(KeyCode::KeyW).display(), "W");
         assert_eq!(Bind::Mouse(MouseButton::Right).display(), "MOUSE RIGHT");
+        assert_eq!(Bind::WheelDown.display(), "WHEEL DOWN");
+    }
+
+    #[test]
+    fn the_defaults_bind_every_action_to_something_different() {
+        let settings = Settings::default();
+        for (i, a) in Action::ALL.iter().enumerate() {
+            for b in &Action::ALL[i + 1..] {
+                assert_ne!(settings.bind(*a), settings.bind(*b), "{a:?} and {b:?}");
+            }
+        }
     }
 
     #[test]

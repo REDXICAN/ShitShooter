@@ -1802,6 +1802,7 @@ const KEY_HINTS: &[(&[Action], &str)] = &[
     (&[Action::Reload], "Reload"),
     (&[Action::Grenade], "Grenades (hold for the wheel), click to throw"),
     (&[Action::Primary, Action::Secondary, Action::Knife], "Weapons"),
+    (&[Action::PreviousWeapon, Action::NextWeapon], "Previous / next weapon"),
     (&[Action::Scores], "Scoreboard"),
 ];
 

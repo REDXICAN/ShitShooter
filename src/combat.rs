@@ -150,10 +150,17 @@ fn fire(
     // Switching weapons takes a moment and abandons a reload. It also puts
     // away a grenade in hand, unless that is a frag with its pin pulled.
     let cooking = player.hand.is_some_and(|hand| hand.fuse.is_some());
-    for (action, slot) in [(Action::Primary, 0), (Action::Secondary, 1), (Action::Knife, KNIFE_SLOT)] {
-        if !input.just_pressed(action) || cooking {
-            continue;
-        }
+    let slots = [(Action::Primary, 0), (Action::Secondary, 1), (Action::Knife, KNIFE_SLOT)];
+    let mut wanted = slots.iter().rev().find(|(action, _)| input.just_pressed(*action)).map(|(_, slot)| *slot);
+    // Next and previous go round the three in order.
+    let step = input.just_pressed(Action::NextWeapon) as i32 - input.just_pressed(Action::PreviousWeapon) as i32;
+    if step != 0 {
+        let here = slots.iter().position(|(_, slot)| *slot == player.slot).unwrap_or(0) as i32;
+        wanted = Some(slots[(here + step).rem_euclid(slots.len() as i32) as usize].1);
+    }
+    if let Some(slot) = wanted
+        && !cooking
+    {
         if player.hand.take().is_some() || player.slot != slot {
             player.slot = slot;
             player.draw = DRAW_TIME;
