@@ -211,6 +211,8 @@ struct Player {
     cooking: Option<f32>,
     /// Their paint job, encoded, once they have sent one.
     paint: Option<Vec<u8>>,
+    /// Conquest: where they asked to come back in (see `ClientMsg::SpawnAt`).
+    spawn_at: Option<u8>,
     bot: Option<Bot>,
 }
 
@@ -764,6 +766,11 @@ impl Server {
             ClientMsg::Cook => self.handle_cook(id),
             ClientMsg::Grenade { kind, origin, vel } => self.handle_grenade(id, kind, origin, vel),
             ClientMsg::Ping { target, pos } => self.handle_ping(id, target, pos),
+            ClientMsg::SpawnAt { point } => {
+                if let Some(player) = self.players.get_mut(&id) {
+                    player.spawn_at = point;
+                }
+            }
             ClientMsg::Respawn if self.phase == Phase::Playing => {
                 if let Some(player) = self.players.get_mut(&id)
                     && !player.alive
@@ -1247,7 +1254,8 @@ impl Server {
             .map(|(_, p)| p.pos)
             .collect();
         let pool = if self.settings.mode == MODE_CONQUEST {
-            let group = self.conquest_spawn_group(my_team & 1, &others);
+            let choice = self.players.get(&id).and_then(|p| p.spawn_at);
+            let group = self.conquest_spawn_group(my_team & 1, &others, choice);
             match group {
                 Some(index) => &self.map.flags[index].spawns,
                 None => &self.map.bases[my_team as usize & 1],
@@ -1310,15 +1318,21 @@ impl Server {
     }
 
     /// Conquest: which of the flags `team` holds to spawn at, or `None` for
-    /// its base. Mostly the one nearest a flag still to take (the front),
-    /// sometimes another, never one with an enemy on it.
-    fn conquest_spawn_group(&mut self, team: u8, enemies: &[Vec3]) -> Option<usize> {
+    /// its base. The one picked (`choice`, see `ClientMsg::SpawnAt`) if it
+    /// can be; otherwise mostly the one nearest a flag still to take (the
+    /// front), sometimes another, never one with an enemy on it.
+    fn conquest_spawn_group(&mut self, team: u8, enemies: &[Vec3], choice: Option<u8>) -> Option<usize> {
         let (roll, any) = (self.random() % 4, self.random() as usize);
         let flags = &self.map.flags;
         let ours: Vec<usize> = (0..flags.len())
             .filter(|&i| self.flags.get(i).is_some_and(|f| f.owner == Some(team)))
             .filter(|&i| !enemies.iter().any(|enemy| flags[i].holds(*enemy)))
             .collect();
+        match choice {
+            Some(0) => return None,
+            Some(point) => return ours.contains(&(point as usize - 1)).then_some(point as usize - 1),
+            None => {}
+        }
         if ours.is_empty() {
             return None;
         }
@@ -1501,6 +1515,7 @@ impl Server {
             loadout_grenade: FRAG,
             cooking: None,
             paint: None,
+            spawn_at: None,
             bot,
         }
     }
@@ -2076,6 +2091,10 @@ mod tests {
             server.spawn_player(1000);
             assert!(near(server.players[&1000].pos, &server.map.bases[0]));
         }
+        // A flag picked but not held: the base.
+        server.handle_message(1000, ClientMsg::SpawnAt { point: Some(3) });
+        server.spawn_player(1000);
+        assert!(near(server.players[&1000].pos, &server.map.bases[0]));
         server.flags[2] = FlagState { owner: Some(0), control: -1.0 };
         let mut at_flag = 0;
         for _ in 0..40 {
@@ -2085,6 +2104,12 @@ mod tests {
             at_flag += near(pos, &server.map.flags[2].spawns) as u32;
         }
         assert!(at_flag > 20, "only {at_flag} of 40 at the flag");
+        // Picked and held: always there.
+        server.handle_message(1000, ClientMsg::SpawnAt { point: Some(3) });
+        for _ in 0..10 {
+            server.spawn_player(1000);
+            assert!(near(server.players[&1000].pos, &server.map.flags[2].spawns));
+        }
     }
 
     #[test]

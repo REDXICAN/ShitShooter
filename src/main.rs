@@ -16,6 +16,7 @@ mod grenade;
 mod gun_model;
 mod loadout;
 mod map;
+mod minimap;
 mod nav;
 mod net;
 mod paint;
@@ -211,7 +212,7 @@ fn main() {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
-            (ping::PingPlugin, conquest::ConquestPlugin),
+            (ping::PingPlugin, conquest::ConquestPlugin, minimap::MinimapPlugin),
             paint::PaintPlugin,
             paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,

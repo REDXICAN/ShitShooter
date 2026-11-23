@@ -19,7 +19,7 @@ trees, and a new mode, Conquest, played on capture points.
    flags bleeds the enemy), spawning at your base or flags you hold; bots
    path-find to flags (`src/nav.rs`); HUD flag row, capture bar and flag
    markers. Small maps get three flags too.
-5. [ ] Minimap, and picking where to spawn on the death screen.
+5. [x] Minimap, and picking where to spawn on the death screen.
 
 Done so far, worth knowing:
 
@@ -37,7 +37,11 @@ Done so far, worth knowing:
   `conquest_spawn_group` in `src/server.rs`. Bots path-find with `src/nav.rs`
   (0.5 m cells over `map.bounds`, built when the server picks the map, about
   12 ms for Valley). The selftest in conquest ends standing on a flag
-  (`flag.png`).
+  (`flag.png`) and on the death screen (`deploy.png`, faked on the client).
+- `src/minimap.rs` paints the map from above when it loads (256 px). In
+  conquest the death screen shows it bigger, and a click on the base or a
+  held flag sends `ClientMsg::SpawnAt`; the server keeps it until changed,
+  and spawns at the base while that flag is not held.
 
 Decided (first guesses, tuned in play): flags capture in 10 s for one
 player, faster with more (up to 3); 250 tickets a team; holding more flags

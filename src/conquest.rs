@@ -419,8 +419,9 @@ fn update_markers(
             continue;
         };
         let above = point.pos + Vec3::Y * (POLE_TOP + 1.5);
-        // Not while standing on it: the bar says it all.
-        let at = (!point.holds(player.pos)).then(|| on_screen(camera, fov, size, above)).flatten();
+        // Not while standing on it (the bar says it all), nor while dead.
+        let shown = player.alive && !point.holds(player.pos);
+        let at = shown.then(|| on_screen(camera, fov, size, above)).flatten();
         let Some(at) = at else {
             visibility.set_if_neq(Visibility::Hidden);
             continue;

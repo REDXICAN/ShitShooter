@@ -264,6 +264,10 @@ pub enum ClientMsg {
     },
     /// While dead: put us back in now rather than at the end of `RESPAWN_DELAY`.
     Respawn,
+    /// Conquest: where to come back in from now on. `None`: wherever the
+    /// server thinks best; 0: our base; `1 + i`: the map's flag `i`, while
+    /// our team holds it (else the base).
+    SpawnAt { point: Option<u8> },
 }
 
 /// Client -> server, unreliable, sent every fixed tick while alive.

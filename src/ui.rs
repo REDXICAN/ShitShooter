@@ -1532,8 +1532,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             height: percent(100),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            // Clear of the clock and scores at the top.
-            padding: UiRect::top(px(100)),
+            // Clear of the clock and scores at the top, and conquest's flags.
+            padding: UiRect::top(px(140)),
             row_gap: px(8),
             display: Display::None,
             ..default()
@@ -1546,9 +1546,14 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             (
                 Node {
                     margin: UiRect::top(px(6)),
+                    column_gap: px(18),
+                    align_items: AlignItems::Start,
                     ..default()
                 },
-                children![loadout_card(320.0, PANEL, hud_text(14.0, DIM, Hud::DeadKeys))],
+                children![
+                    crate::minimap::deploy_map(),
+                    loadout_card(320.0, PANEL, hud_text(14.0, DIM, Hud::DeadKeys)),
+                ],
             ),
             (primary_button("Respawn"), RespawnButton, observe(on_respawn_button)),
         ],
@@ -1721,7 +1726,7 @@ fn on_respawn_button(_: On<Activate>, mut player: ResMut<LocalPlayer>, mut conne
 fn on_death_screen_click(
     click: On<PointerClick>,
     parents: Query<&ChildOf>,
-    keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>)>>,
+    keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
     mut player: ResMut<LocalPlayer>,
     mut connection: ResMut<Connection>,
 ) {

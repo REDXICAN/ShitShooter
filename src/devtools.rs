@@ -580,7 +580,16 @@ fn selftest_play(
         println!("[selftest] flags {:?}", session.flags);
         test.capture(&mut commands, "flag.png");
     }
-    if test.reached(15, if conquest { 17.5 } else { 11.2 }) {
+    // The death screen with its map to pick where to come back in (only on
+    // our side: the server still has us alive).
+    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && conquest {
+        player.alive = false;
+        player.killed_by = Some("[bot] Clanker".to_string());
+    }
+    if test.reached(16, if conquest { 18.0 } else { 11.15 }) && conquest {
+        test.capture(&mut commands, "deploy.png");
+    }
+    if test.reached(17, if conquest { 18.5 } else { 11.2 }) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",
