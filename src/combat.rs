@@ -53,7 +53,7 @@ impl Plugin for CombatPlugin {
                         .after(RemoteSystems)
                         .before(PlayerSystems::Camera)
                         .run_if(in_state(AppState::Playing))
-                        .run_if(resource_exists::<Connection>),
+                        .distributive_run_if(resource_exists::<Connection>),
                     handle_net.run_if(resource_exists::<Connection>),
                     age_feed,
                 ),

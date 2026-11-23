@@ -31,9 +31,12 @@ impl Plugin for NetPlugin {
             .add_message::<SnapshotMsg>()
             .add_systems(
                 PreUpdate,
+                // Checked before each system, not once for the group: `receive`
+                // drops the connection when it fails, and the rest must then
+                // skip this frame instead of asking for a connection that is gone.
                 (receive, send_loadout, send_paint, update_session)
                     .chain()
-                    .run_if(resource_exists::<Connection>),
+                    .distributive_run_if(resource_exists::<Connection>),
             )
             .add_systems(PostUpdate, flush.run_if(resource_exists::<Connection>));
     }

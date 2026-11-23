@@ -1755,9 +1755,11 @@ fn on_respawn_button(
     _: On<Activate>,
     session: Res<Session>,
     mut player: ResMut<LocalPlayer>,
-    mut connection: ResMut<Connection>,
+    connection: Option<ResMut<Connection>>,
 ) {
-    ask_respawn(&mut player, &mut connection, session.mode);
+    if let Some(mut connection) = connection {
+        ask_respawn(&mut player, &mut connection, session.mode);
+    }
 }
 
 /// No respawn button where there is no respawning early (conquest).
@@ -1776,12 +1778,14 @@ fn on_death_screen_click(
     keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
     session: Res<Session>,
     mut player: ResMut<LocalPlayer>,
-    mut connection: ResMut<Connection>,
+    connection: Option<ResMut<Connection>>,
 ) {
     let target = click.original_event_target();
     let on_card = std::iter::once(target).chain(parents.iter_ancestors(target)).any(|entity| keep.contains(entity));
     if click.button == PointerButton::Primary && !on_card {
-        ask_respawn(&mut player, &mut connection, session.mode);
+        if let Some(mut connection) = connection {
+            ask_respawn(&mut player, &mut connection, session.mode);
+        }
     }
 }
 

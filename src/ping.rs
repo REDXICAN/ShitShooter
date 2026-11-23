@@ -48,7 +48,7 @@ impl Plugin for PingPlugin {
                         .chain()
                         .after(PlayerSystems::Simulate)
                         .after(RemoteSystems)
-                        .run_if(resource_exists::<Connection>),
+                        .distributive_run_if(resource_exists::<Connection>),
                     draw_markers.after(PlayerSystems::Camera),
                 )
                     .chain()
