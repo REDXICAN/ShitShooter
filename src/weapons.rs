@@ -275,8 +275,8 @@ pub const WEAPONS: [Weapon; 6] = [
     },
     Weapon {
         name: "Knife",
-        damage: 55,
-        interval: 0.5,
+        damage: 150,
+        interval: 0.2,
         auto: true,
         pellets: 0,
         magazine: 0,
@@ -286,7 +286,7 @@ pub const WEAPONS: [Weapon; 6] = [
         hip_spread: 0.0,
         aim_spread: 0.0,
         zoom: 1.0,
-        mobility: 1.12,
+        mobility: 1.32,
         // Blade and handle together.
         size: [0.012, 0.04, 0.3],
         sight_relief: 0.08,
