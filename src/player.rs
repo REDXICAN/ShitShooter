@@ -396,9 +396,9 @@ impl LocalPlayer {
         self.guns.get(self.slot).map_or(IRON_SIGHTS, |gun| sight_on(gun.weapon, gun.sight))
     }
 
-    /// Field of view factor when fully aimed: the sight's own, or the gun's.
+    /// Field of view factor when fully aimed: the sight's, whatever the gun.
     pub fn zoom(&self) -> f32 {
-        sight(self.sight_id()).zoom.unwrap_or(self.weapon().zoom)
+        sight(self.sight_id()).zoom
     }
 
     /// 0 -> 1 as the view through a scope fades in, near the end of aiming.

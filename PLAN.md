@@ -47,7 +47,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 5. [x] Weapon panel, type 1 with the ring reload (PR #4)
 6. [x] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
 7. [x] Reload animations on the guns
-8. [ ] 2x sight on every gun, and zoom set by the sight (#7, part 2)
+8. [x] 2x sight on every gun, and zoom set by the sight (#7, part 2)
 9. [ ] Air strafe tuning (#5)
 
 Later, not now: surf ramps (#6), see the last section.

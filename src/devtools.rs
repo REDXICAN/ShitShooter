@@ -22,7 +22,7 @@ use crate::{
     map::PLAYER_HALF,
     loadout::{LoadoutArrow, Slot},
     remote::{Corpse, RemotePlayer},
-    weapons::{GUN_COUNT, IRON_SIGHTS, SHOTGUN, WeaponId, weapon},
+    weapons::{GUN_COUNT, SHOTGUN, TWO_X, WeaponId, weapon},
     world::GameMap,
     settings::{Settings, SettingsMenu},
 };
@@ -280,9 +280,9 @@ fn selftest_play(
             test.capture(&mut commands, "countdown.png");
         }
         // Nothing can happen before the match starts: a look at every gun in
-        // the first slot, from the hip, aimed, and part way through a reload
-        // from empty (a magazine coming out, or a shell going in), a few
-        // frames each.
+        // the first slot with the 2x sight (they all take it), from the hip,
+        // aimed, and part way through a reload from empty (a magazine coming
+        // out, or a shell going in), a few frames each.
         if session.countdown < 2.6 && player.alive && !session.team_mode() {
             const FRAMES: u32 = 10;
             const VIEWS: [&str; 3] = ["hip", "aimed", "reload"];
@@ -294,7 +294,7 @@ fn selftest_play(
                 let stats = weapon(gun);
                 player.slot = 0;
                 player.guns[0].weapon = gun;
-                player.guns[0].sight = IRON_SIGHTS;
+                player.guns[0].sight = TWO_X;
                 player.guns[0].ammo = if view == "reload" { 0 } else { stats.magazine };
                 player.aim = (view == "aimed") as u8 as f32;
                 let progress = if stats.reload_per_round { 0.3 } else { 0.27 };

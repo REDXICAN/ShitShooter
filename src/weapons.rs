@@ -26,8 +26,6 @@ pub struct Weapon {
     /// Half angle (radians) of the cone shots land in, from the hip and aimed.
     pub hip_spread: f32,
     pub aim_spread: f32,
-    /// Field of view factor when aiming down sights; smaller zooms in more.
-    pub zoom: f32,
     /// Running speed factor while it is in your hands.
     pub mobility: f32,
     /// Size of the gun in first person: width, height, length (metres).
@@ -73,6 +71,7 @@ pub const IRON_SIGHTS: SightId = 0;
 pub const RED_DOT: SightId = 1;
 pub const SCOPE: SightId = 2;
 pub const REFLEX: SightId = 3;
+pub const TWO_X: SightId = 4;
 
 pub struct Sight {
     pub name: &'static str,
@@ -81,37 +80,46 @@ pub struct Sight {
     /// `IronSight...` are hidden under it, and aiming lines up the dot with the
     /// crosshair. `None` for the iron sights.
     pub path: Option<&'static str>,
-    /// Field of view factor when aiming through it, instead of the gun's own.
-    pub zoom: Option<f32>,
+    /// Field of view factor when aimed through it; smaller zooms in more. It
+    /// is the same on every gun: zoom comes from the sight, not the gun.
+    pub zoom: f32,
     /// Fully aimed, the view through it is a scope's: the gun is hidden and a
     /// lens with a reticle fills the screen.
     pub overlay: bool,
 }
 
-pub const SIGHTS: [Sight; 4] = [
+pub const SIGHTS: [Sight; 5] = [
     Sight {
         name: "Iron sights",
         path: None,
-        zoom: None,
+        zoom: 0.85,
         overlay: false,
     },
     Sight {
         name: "Red dot",
         path: Some("models/sights/red_dot.glb"),
-        zoom: None,
+        zoom: 0.75,
         overlay: false,
     },
     Sight {
         name: "Scope",
         path: Some("models/sights/scope.glb"),
-        zoom: Some(0.25),
+        zoom: 0.25,
         overlay: true,
     },
     // An open window with a ring round the dot: low and light, so it suits a pistol too.
     Sight {
         name: "Reflex",
         path: Some("models/sights/reflex.glb"),
-        zoom: None,
+        zoom: 0.75,
+        overlay: false,
+    },
+    // A short tube that magnifies twice, a dot in a ring on its front lens.
+    // Made by art/sight_2x.py; small enough for the pistol.
+    Sight {
+        name: "2x sight",
+        path: Some("models/sights/2x.glb"),
+        zoom: 0.5,
         overlay: false,
     },
 ];
@@ -170,7 +178,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 4.0,
         hip_spread: 0.014,
         aim_spread: 0.0,
-        zoom: 0.62,
         mobility: 1.0,
         size: [0.04, 0.055, 0.3],
         sight_relief: 0.08,
@@ -181,7 +188,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/weapons/M4A1.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT, REFLEX],
+            sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
     },
@@ -198,7 +205,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 5.0,
         hip_spread: 0.024,
         aim_spread: 0.008,
-        zoom: 0.75,
         mobility: 1.05,
         size: [0.04, 0.06, 0.2],
         sight_relief: 0.08,
@@ -209,7 +215,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/weapons/MP7.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT, REFLEX],
+            sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
     },
@@ -226,7 +232,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 6.0,
         hip_spread: 0.06,
         aim_spread: 0.045,
-        zoom: 0.8,
         mobility: 1.0,
         size: [0.05, 0.06, 0.34],
         sight_relief: 0.08,
@@ -237,7 +242,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/weapons/Shotgun.glb",
             barrel_plus_z: true,
-            sights: &[],
+            sights: &[TWO_X],
         }),
         choke: Some(Choke {
             spread: 0.015,
@@ -257,7 +262,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 3.0,
         hip_spread: 0.05,
         aim_spread: 0.0,
-        zoom: 0.55,
         mobility: 0.9,
         size: [0.035, 0.05, 0.44],
         sight_relief: 0.08,
@@ -268,7 +272,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/weapons/SCAR.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT, REFLEX, SCOPE],
+            sights: &[RED_DOT, REFLEX, TWO_X, SCOPE],
         }),
         choke: None,
     },
@@ -285,7 +289,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 5.0,
         hip_spread: 0.012,
         aim_spread: 0.002,
-        zoom: 0.78,
         mobility: 1.05,
         size: [0.035, 0.05, 0.15],
         sight_relief: 0.18,
@@ -296,7 +299,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/weapons/M1911Tactical.gltf",
             barrel_plus_z: false,
-            sights: &[RED_DOT, REFLEX],
+            sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
     },
@@ -313,7 +316,6 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 0.0,
         hip_spread: 0.0,
         aim_spread: 0.0,
-        zoom: 1.0,
         mobility: 1.32,
         // Blade and handle together.
         size: [0.012, 0.04, 0.3],
@@ -384,6 +386,17 @@ mod tests {
             if let Some(choke) = &gun.choke {
                 assert!(choke.spread < gun.aim_spread && choke.time > 0.0, "{}", gun.name);
             }
+        }
+    }
+
+    #[test]
+    fn every_gun_takes_the_2x_sight_and_each_sight_zooms_in() {
+        for (id, gun) in WEAPONS.iter().enumerate().take(GUN_COUNT as usize) {
+            assert!(sights_for(id as WeaponId).contains(&TWO_X), "{}", gun.name);
+        }
+        assert!(sights_for(KNIFE).is_empty());
+        for sight in &SIGHTS {
+            assert!(sight.zoom > 0.0 && sight.zoom < 1.0, "{}", sight.name);
         }
     }
 

@@ -1056,7 +1056,7 @@ fn apply_volume(settings: Res<Settings>, args: Res<LaunchArgs>, mut global: ResM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::weapons::REFLEX;
+    use crate::weapons::{REFLEX, TWO_X};
 
     #[test]
     fn settings_survive_a_save_and_load() {
@@ -1092,11 +1092,17 @@ mod tests {
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(RIFLE), RED_DOT, "the rifle's default");
         settings.step_sight(0, 1);
+        assert_eq!(settings.sight_for(shotgun), TWO_X, "the shotgun takes only the 2x");
+        settings.step_sight(0, 1);
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
         settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(smg), REFLEX);
         settings.step_sight(1, 1);
+        assert_eq!(settings.sight_for(smg), TWO_X);
+        settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
+        settings.step_sight(1, -1);
+        assert_eq!(settings.sight_for(smg), TWO_X, "and back");
     }
 
     #[test]
@@ -1108,15 +1114,17 @@ sight.Pistol = Scope
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             settings.step_sight(0, 1);
             seen.push(settings.sight_for(SNIPER));
         }
-        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, REFLEX, SCOPE]);
+        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, SCOPE]);
         settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), RED_DOT);
         settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), REFLEX);
+        settings.step_sight(1, 1);
+        assert_eq!(settings.sight_for(PISTOL), TWO_X);
         settings.step_sight(1, 1);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
     }
