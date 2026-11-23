@@ -37,6 +37,15 @@ const SMOKE_FADE: f32 = 2.5;
 const SMOKE_ALPHA: f32 = 0.93;
 /// Flashed for less than this, the ears do not ring.
 const RINGING_BLIND: f32 = 1.0;
+/// Thrown grenade models are drawn this much bigger than life, to be seen
+/// across the arena.
+const THROWN_SCALE: f32 = 1.6;
+/// How far below the middle of its bounce box a thrown grenade's model sits,
+/// so it lies on the floor rather than hovering over it.
+const THROWN_DROP: f32 = GRENADE_HALF - 0.05;
+/// Slower than this, in metres a second, a grenade has come to rest and rolls
+/// over onto its side.
+const RESTING_SPEED: f32 = 0.5;
 
 pub struct GrenadePlugin;
 
@@ -51,6 +60,7 @@ impl Plugin for GrenadePlugin {
                         .chain()
                         .run_if(in_state(AppState::Playing)),
                     show_held,
+                    held_without_shadows,
                 ),
             );
     }
@@ -65,6 +75,21 @@ pub struct SmokeFog(pub f32);
 /// The grenade in our hand. A child of the camera.
 #[derive(Component)]
 pub struct HeldGrenade;
+
+/// One kind's model under `HeldGrenade`; the kind in hand is the one shown.
+#[derive(Component)]
+pub struct HeldGrenadeModel(pub GrenadeKind);
+
+/// Where the held grenade is: `hold` 0 is low out of sight, 1 is up in view.
+pub fn held_grenade_transform(hold: f32) -> Transform {
+    Transform::from_translation(Vec3::new(-0.24, -0.42, -0.5).lerp(Vec3::new(-0.2, -0.2, -0.5), hold))
+        .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.5, 0.15, 0.2))
+        .with_scale(Vec3::splat(0.8))
+}
+
+/// A thrown grenade's model, a child of its `Grenade`, which turns it as it flies.
+#[derive(Component)]
+struct ThrownModel;
 
 #[derive(Component)]
 struct Grenade {
@@ -113,20 +138,29 @@ fn handle_net(
         match msg {
             ServerMsg::Grenade { id, kind, pos, vel, fuse } => {
                 let pos = Vec3::from(*pos);
+                let vel = Vec3::from(*vel);
+                // Leaves the hand fuse up, leaning the way it was thrown.
+                let lean = Quat::from_rotation_arc(Vec3::Y, (vel.normalize_or(Vec3::NEG_Z) + Vec3::Y * 2.0).normalize());
                 commands.spawn((
                     Grenade {
                         id: *id,
                         pos,
                         previous: pos,
-                        vel: Vec3::from(*vel),
+                        vel,
                         clock: 0.0,
                         age: 0.0,
                         fuse: *fuse,
                     },
-                    Mesh3d(assets.sphere.clone()),
-                    MeshMaterial3d(assets.grenades[*kind as usize % GRENADE_KINDS].clone()),
-                    Transform::from_translation(pos).with_scale(Vec3::splat(GRENADE_HALF * 2.0)),
+                    Transform::from_translation(pos),
+                    Visibility::default(),
                     DespawnOnExit(AppState::Playing),
+                    children![(
+                        ThrownModel,
+                        WorldAssetRoot(assets.grenades[*kind as usize % GRENADE_KINDS].clone()),
+                        Transform::from_xyz(0.0, -THROWN_DROP, 0.0)
+                            .with_rotation(lean)
+                            .with_scale(Vec3::splat(THROWN_SCALE)),
+                    )],
                 ));
             }
             ServerMsg::Explosion { id, kind, pos } => {
@@ -280,12 +314,14 @@ fn simulate(
     mut commands: Commands,
     time: Res<Time>,
     map: Res<GameMap>,
-    mut grenades: Query<(Entity, &mut Grenade, &mut Transform)>,
+    mut grenades: Query<(Entity, &mut Grenade, &mut Transform, &Children), Without<ThrownModel>>,
+    mut models: Query<&mut Transform, With<ThrownModel>>,
     mut sounds: MessageWriter<SoundCue>,
 ) {
-    for (entity, mut grenade, mut transform) in &mut grenades {
+    let dt = time.delta_secs().min(0.25);
+    for (entity, mut grenade, mut transform, children) in &mut grenades {
         let grenade = &mut *grenade;
-        grenade.clock += time.delta_secs().min(0.25);
+        grenade.clock += dt;
         while grenade.clock >= GRENADE_STEP {
             grenade.clock -= GRENADE_STEP;
             grenade.age += GRENADE_STEP;
@@ -298,12 +334,37 @@ fn simulate(
             }
         }
         transform.translation = grenade.previous.lerp(grenade.pos, grenade.clock / GRENADE_STEP);
+        for &child in children {
+            if let Ok(mut model) = models.get_mut(child) {
+                tumble(&mut model, grenade.vel, dt);
+            }
+        }
         // The server's explosion normally removes it. This only tidies up one
         // whose explosion message never came.
         if grenade.age > grenade.fuse + 2.0 {
             commands.entity(entity).despawn();
         }
     }
+}
+
+/// A flying grenade tumbles end over end about the axis across its path. Once
+/// it has stopped it rolls over onto its side, fuse along the floor.
+fn tumble(model: &mut Transform, vel: Vec3, dt: f32) {
+    let speed = vel.length();
+    if speed > RESTING_SPEED {
+        let axis = vel.cross(Vec3::Y).normalize_or_zero();
+        if axis != Vec3::ZERO {
+            // About two turns a second at throwing speed.
+            let spin = -speed * 0.6;
+            model.rotation = (Quat::from_axis_angle(axis, spin * dt) * model.rotation).normalize();
+        }
+        // Rolling along the floor: the fuse stays across the way it rolls.
+        return;
+    }
+    let up = model.rotation * Vec3::Y;
+    let flat = Vec3::new(up.x, 0.0, up.z).normalize_or(Vec3::X);
+    let lying = Quat::from_rotation_arc(up, flat) * model.rotation;
+    model.rotation = model.rotation.slerp(lying, 1.0 - (-10.0 * dt).exp());
 }
 
 /// The sphere swells fast and then shrinks away; the light fades with it.
@@ -372,10 +433,10 @@ fn update_smoke(
 fn show_held(
     state: Res<State<AppState>>,
     player: Res<LocalPlayer>,
-    assets: Option<Res<SharedAssets>>,
-    held: Single<(&mut Transform, &mut Visibility, &mut MeshMaterial3d<StandardMaterial>), With<HeldGrenade>>,
+    held: Single<(&mut Transform, &mut Visibility), With<HeldGrenade>>,
+    mut models: Query<(&HeldGrenadeModel, &mut Visibility), Without<HeldGrenade>>,
 ) {
-    let (mut transform, mut visibility, mut material) = held.into_inner();
+    let (mut transform, mut visibility) = held.into_inner();
     let hand = player.hand.filter(|_| player.alive && *state.get() == AppState::Playing);
     let wanted = if hand.is_some() {
         Visibility::Inherited
@@ -385,18 +446,38 @@ fn show_held(
     if *visibility != wanted {
         *visibility = wanted;
     }
-    let (Some(hand), Some(assets)) = (hand, assets) else {
+    let Some(hand) = hand else {
         return;
     };
-    let kind_material = &assets.grenades[hand.kind as usize % GRENADE_KINDS];
-    if material.0 != *kind_material {
-        material.0 = kind_material.clone();
+    for (model, mut visibility) in &mut models {
+        let wanted = if model.0 == hand.kind {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
     }
     // A cooking frag trembles as the fuse runs down.
     let shake = match hand.fuse {
         Some(fuse) if fuse < 0.8 => (fuse * 90.0).sin() * 0.004,
         _ => 0.0,
     };
-    transform.translation = Vec3::new(-0.24, -0.42, -0.5).lerp(Vec3::new(-0.2, -0.2, -0.5), player.hold)
-        + Vec3::new(shake, 0.0, 0.0);
+    *transform = held_grenade_transform(player.hold);
+    transform.translation.x += shake;
+}
+
+/// The held grenade's shadow would float in front of us: its meshes cast none.
+fn held_without_shadows(
+    mut commands: Commands,
+    meshes: Query<Entity, (Added<Mesh3d>, Without<NotShadowCaster>)>,
+    parents: Query<&ChildOf>,
+    held: Query<(), With<HeldGrenade>>,
+) {
+    for mesh in &meshes {
+        if parents.iter_ancestors(mesh).any(|ancestor| held.contains(ancestor)) {
+            commands.entity(mesh).insert(NotShadowCaster);
+        }
+    }
 }

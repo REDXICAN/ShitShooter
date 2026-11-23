@@ -3,7 +3,7 @@
 use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
-    grenade::HeldGrenade,
+    grenade::{HeldGrenade, HeldGrenadeModel, held_grenade_transform},
     map::Map,
     net::Session,
     protocol::{GRENADE_KINDS, HILL_RADIUS, MODE_HILL, PLAYER_COLOR_COUNT},
@@ -77,8 +77,8 @@ pub struct SharedAssets {
     pub explosion: Handle<StandardMaterial>,
     /// The white-hot flash of a flashbang.
     pub flash: Handle<StandardMaterial>,
-    /// Each kind of grenade, indexed by `GrenadeKind`.
-    pub grenades: [Handle<StandardMaterial>; GRENADE_KINDS],
+    /// The model of each kind of grenade, indexed by `GrenadeKind`.
+    pub grenades: [Handle<WorldAsset>; GRENADE_KINDS],
     pad: Handle<StandardMaterial>,
     armor: Handle<StandardMaterial>,
     /// The faint mark under an armor pickup, there even while it is taken.
@@ -106,8 +106,16 @@ pub fn player_color(index: u8) -> Color {
     Color::srgb(r, g, b)
 }
 
+/// The grenade models, indexed by `GrenadeKind`. Made by `art/grenades.py`.
+const GRENADE_MODELS: [&str; GRENADE_KINDS] = [
+    "models/grenades/frag.glb",
+    "models/grenades/flash.glb",
+    "models/grenades/smoke.glb",
+];
+
 fn setup(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -128,20 +136,7 @@ fn setup(
     let armor = glowing(LinearRgba::rgb(0.8, 2.6, 9.0));
     let armor_base = glowing(LinearRgba::rgb(0.05, 0.25, 0.9));
     let flash = glowing(LinearRgba::rgb(40.0, 40.0, 36.0));
-    // Frag: olive with a red glint; flash: pale with a yellow one; smoke: grey with a white one.
-    let grenades = [
-        ([0.16, 0.24, 0.12], [0.5, 0.06, 0.03]),
-        ([0.75, 0.75, 0.7], [0.6, 0.5, 0.05]),
-        ([0.3, 0.32, 0.34], [0.25, 0.25, 0.25]),
-    ]
-    .map(|([r, g, b], [er, eg, eb])| {
-        materials.add(StandardMaterial {
-            base_color: Color::srgb(r, g, b),
-            emissive: LinearRgba::rgb(er, eg, eb),
-            perceptual_roughness: 0.6,
-            ..default()
-        })
-    });
+    let grenades = GRENADE_MODELS.map(|path| asset_server.load(GltfAssetLabel::Scene(0).from_asset(path)));
     let dark = materials.add(StandardMaterial {
         base_color: Color::srgb(0.05, 0.05, 0.06),
         perceptual_roughness: 0.4,
@@ -200,13 +195,14 @@ fn setup(
                 gun_part(ViewModelPart::Magazine, &cube, &dark),
             ],
         ), (
-            // The grenade in the other hand while it is being cooked.
+            // The grenade in the other hand: one model of each kind, the one
+            // in the loadout shown.
             HeldGrenade,
-            Mesh3d(sphere.clone()),
-            MeshMaterial3d(grenades[0].clone()),
-            Transform::from_xyz(-0.24, -0.42, -0.5).with_scale(Vec3::splat(0.07)),
+            held_grenade_transform(0.0),
             Visibility::Hidden,
-            NotShadowCaster,
+            Children::spawn(SpawnIter(grenades.clone().into_iter().enumerate().map(|(kind, scene)| {
+                (HeldGrenadeModel(kind as u8), WorldAssetRoot(scene), Visibility::Hidden)
+            }))),
         )],
     ));
 
