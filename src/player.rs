@@ -201,6 +201,9 @@ pub struct LocalPlayer {
     view_height: f32,
     /// 0 = hip, 1 = fully aimed down sights.
     pub aim: f32,
+    /// Seconds the gun in hand has been held aimed since the last shot, for
+    /// a gun with a choke (see `Weapon::choke`).
+    pub choked_for: f32,
     /// Seconds until the reload finishes; 0 when not reloading.
     pub reload: f32,
     /// The kind of grenade carried this life (picked in the loadout).
@@ -252,6 +255,7 @@ impl Default for LocalPlayer {
             slide_boost_cooldown: 0.0,
             view_height: STAND_EYE,
             aim: 0.0,
+            choked_for: 0.0,
             reload: 0.0,
             grenade: FRAG,
             grenades: grenade(FRAG).max,
@@ -362,6 +366,21 @@ impl LocalPlayer {
 
     pub fn weapon(&self) -> &'static Weapon {
         weapon(self.weapon_id())
+    }
+
+    /// 0 -> 1 as a gun with a choke closes up (see `Weapon::choke`).
+    pub fn choke(&self) -> f32 {
+        self.weapon().choke.as_ref().map_or(0.0, |choke| (self.choked_for / choke.time).min(1.0))
+    }
+
+    /// Half angle (radians) of the cone the next shot lands in.
+    pub fn spread(&self) -> f32 {
+        let stats = self.weapon();
+        let aimed = match &stats.choke {
+            Some(choke) => stats.aim_spread + (choke.spread - stats.aim_spread) * self.choke(),
+            None => stats.aim_spread,
+        };
+        stats.hip_spread + (aimed - stats.hip_spread) * self.aim
     }
 
     pub fn horizontal_speed(&self) -> f32 {

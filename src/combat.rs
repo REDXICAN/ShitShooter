@@ -27,6 +27,8 @@ pub const HIT_MARKER_TIME: f32 = 0.18;
 /// A click on a semi-automatic gun still counts if the gun becomes ready
 /// within this many seconds.
 const TRIGGER_BUFFER: f32 = 0.2;
+/// A choke only starts closing once the gun is this far aimed.
+const CHOKE_AIM: f32 = 0.9;
 /// Kills in one life that earn an announcement.
 const STREAKS: [(u32, &str); 4] = [
     (3, "Killing spree"),
@@ -212,6 +214,17 @@ fn fire(
         }
     }
 
+    // A choke closes up while the gun is held aimed and steady.
+    if stats.choke.is_some() && player.aim > CHOKE_AIM && player.draw <= 0.0 {
+        let was = player.choke();
+        player.choked_for += dt;
+        if was < 1.0 && player.choke() >= 1.0 {
+            own_sound(Sound::Choke);
+        }
+    } else {
+        player.choked_for = 0.0;
+    }
+
     let origin = player.eye();
     let aim_dir = map::look_dir(player.yaw, player.pitch);
 
@@ -335,7 +348,8 @@ fn fire(
 
     // Every bullet goes to a random point inside the spread cone.
     let rotation = Quat::from_euler(EulerRot::YXZ, player.yaw, player.pitch, 0.0);
-    let cone = stats.hip_spread + (stats.aim_spread - stats.hip_spread) * player.aim;
+    let cone = player.spread();
+    player.choked_for = 0.0;
     let dirs: Vec<Vec3> = (0..stats.pellets)
         .map(|_| {
             let off_axis = cone * next_random(&mut rng).sqrt();

@@ -11,6 +11,7 @@ use bevy::{
     text::{EditableText, TextCursorStyle, TextEdit},
     ui::Pressed,
     ui_widgets::{Activate, Button, TextInput, observe},
+    window::PrimaryWindow,
 };
 
 use crate::{
@@ -27,7 +28,7 @@ use crate::{
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
     weapons::{KNIFE, sight, takes_sights, weapon},
-    world::GameMap,
+    world::{GameMap, MainCamera},
 };
 
 const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
@@ -107,6 +108,7 @@ impl Plugin for UiPlugin {
                         update_scope_view,
                         update_key_hints,
                         update_damage_arcs,
+                        update_choke_ring,
                     )
                         .run_if(in_state(AppState::Playing)),
                 ),
@@ -1462,6 +1464,21 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
+    // A gun with a choke, aimed: a ring around the crosshair as wide as its spread.
+    commands.spawn((
+        hud_layer(),
+        children![(
+            ChokeRing,
+            Node {
+                border: UiRect::all(px(1.5)),
+                border_radius: BorderRadius::all(percent(50)),
+                ..default()
+            },
+            BorderColor::all(Color::NONE),
+            Visibility::Hidden,
+        )],
+    ));
+
     // Hit marker, around the crosshair.
     commands.spawn((
         hud_layer(),
@@ -2301,6 +2318,43 @@ fn update_crosshair(
     } else {
         Visibility::Inherited
     });
+}
+
+/// Shows how wide a choked gun's shots will spread (see `Weapon::choke`).
+#[derive(Component)]
+struct ChokeRing;
+
+fn update_choke_ring(
+    player: Res<LocalPlayer>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    projection: Single<&Projection, With<MainCamera>>,
+    ring: Single<(&mut Node, &mut BorderColor, &mut Visibility), With<ChokeRing>>,
+) {
+    let (mut node, mut border, mut visibility) = ring.into_inner();
+    let shown = player.alive && player.weapon().choke.is_some() && player.aim > 0.05;
+    visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    if !shown {
+        return;
+    }
+    let fov = match *projection {
+        Projection::Perspective(perspective) => perspective.fov,
+        _ => 1.0,
+    };
+    // Where the edge of the cone lands on the screen.
+    let radius = player.spread().tan() / (fov / 2.0).tan() * window.height() / 2.0;
+    let size = px((radius * 2.0).round());
+    if node.width != size {
+        node.width = size;
+        node.height = size;
+    }
+    let color = if player.choke() >= 1.0 {
+        ACCENT.with_alpha(0.85 * player.aim)
+    } else {
+        Color::srgba(1.0, 1.0, 1.0, 0.55 * player.aim)
+    };
+    if border.top != color {
+        *border = BorderColor::all(color);
+    }
 }
 
 fn update_overlays(

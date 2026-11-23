@@ -18,6 +18,7 @@ use crate::{
     protocol::ClientMsg,
     map::PLAYER_HALF,
     remote::{Corpse, RemotePlayer},
+    weapons::{SHOTGUN, weapon},
     world::GameMap,
     settings::SettingsMenu,
 };
@@ -274,7 +275,9 @@ fn selftest_play(
     // shot, and around the clicks that cook and throw grenades.
     let pistol_click = (4.4..5.0).contains(&t) && (t * 4.0).fract() > 0.5;
     let grenade_click = [1.0..1.2, 1.45..1.5, 1.6..2.0, 2.05..2.1].iter().any(|window| window.contains(&t));
-    if pistol_click || grenade_click {
+    // Near the end, the shotgun is aimed and held there until it is choked.
+    let shotgun_aim = (9.3..10.9).contains(&t);
+    if pistol_click || grenade_click || shotgun_aim {
         mouse.release(MouseButton::Left);
     } else {
         mouse.press(MouseButton::Left);
@@ -302,7 +305,8 @@ fn selftest_play(
     hold(KeyCode::Digit2, (4.4..4.5).contains(&t));
     hold(KeyCode::Digit3, (5.0..5.1).contains(&t));
     hold(KeyCode::Digit1, (5.6..5.7).contains(&t));
-    if (1.4..2.1).contains(&t) {
+    hold(KeyCode::Digit2, (9.35..9.45).contains(&t));
+    if (1.4..2.1).contains(&t) || (9.4..10.9).contains(&t) {
         mouse.press(MouseButton::Right);
     } else {
         mouse.release(MouseButton::Right);
@@ -418,7 +422,20 @@ fn selftest_play(
     if test.reached(9, 9.2) {
         settings_menu.open = false;
     }
-    if test.reached(10, 9.6) {
+    if test.reached(10, 9.3) {
+        controls.captured = true;
+        player.guns[1].weapon = SHOTGUN;
+        player.guns[1].ammo = weapon(SHOTGUN).magazine;
+    }
+    if test.reached(11, 10.0) {
+        println!("[selftest] shotgun aim {:.2} choke {:.2} spread {:.3}", player.aim, player.choke(), player.spread());
+        test.capture(&mut commands, "choke_open.png");
+    }
+    if test.reached(12, 10.6) {
+        println!("[selftest] shotgun aim {:.2} choke {:.2} spread {:.3}", player.aim, player.choke(), player.spread());
+        test.capture(&mut commands, "choke.png");
+    }
+    if test.reached(13, 10.9) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",
@@ -467,7 +484,7 @@ struct CueCount {
     bounces: (u32, u32),
     explosions: (u32, u32),
     armor: (u32, u32),
-    /// Countdown beeps and pings.
+    /// Countdown beeps, pings and a choke closing.
     signals: (u32, u32),
 }
 
@@ -486,7 +503,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
             Sound::Explosion | Sound::Flashbang | Sound::SmokePop => &mut count.explosions,
             Sound::Ringing => &mut count.explosions,
             Sound::ArmorBreak | Sound::ArmorBroken | Sound::ArmorPickup => &mut count.armor,
-            Sound::Countdown | Sound::Go | Sound::Ping => &mut count.signals,
+            Sound::Countdown | Sound::Go | Sound::Ping | Sound::Choke => &mut count.signals,
         };
         if cue.at.is_none() {
             slot.0 += 1;

@@ -89,6 +89,8 @@ pub enum Sound {
     Go,
     /// We or a teammate pinged something.
     Ping,
+    /// A soft click: the gun in hand is fully choked.
+    Choke,
 }
 
 /// Ask for a sound to be played. `at: None` is our own sound (not spatial);
@@ -114,6 +116,7 @@ struct Sounds {
     ring: Handle<AudioSource>,
     beep: Handle<AudioSource>,
     blip: Handle<AudioSource>,
+    click: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
     rng: u32,
 }
@@ -138,6 +141,7 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         ring: add(synth_ring()),
         beep: add(synth_beep()),
         blip: add(synth_blip()),
+        click: add(synth_click()),
         rng: 0x2545_f491,
     });
 }
@@ -183,6 +187,7 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             // An octave up, and louder.
             Sound::Go => (sounds.beep.clone(), 0.7, 2.0),
             Sound::Ping => (sounds.blip.clone(), 0.5, 1.0),
+            Sound::Choke => (sounds.click.clone(), 0.3, 1.0),
         };
         let settings = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(volume))
@@ -327,6 +332,18 @@ fn synth_tick() -> Vec<f32> {
     samples(0.05, |t| {
         let tone = (TAU * 2400.0 * t).sin() + 0.5 * (TAU * 3600.0 * t).sin();
         tone * (-t * 90.0).exp() * (t * 2000.0).min(1.0) * 0.6
+    })
+}
+
+/// A soft, dry click, like a dial turning one notch.
+fn synth_click() -> Vec<f32> {
+    let mut rng = 0x00c1_1c4e;
+    let mut low_passed = 0.0;
+    samples(0.045, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.3;
+        let knock = (low_passed * 1.4 + (TAU * 1350.0 * t).sin() * 0.5) * (-t * 170.0).exp();
+        (knock * 1.8).tanh() * (t * 4000.0).min(1.0) * 0.7
     })
 }
 
@@ -585,6 +602,7 @@ mod tests {
             synth_charge(),
             synth_hiss(),
             synth_ring(),
+            synth_click(),
         ];
         all.extend((0..4).map(synth_footstep));
         for sound in all {

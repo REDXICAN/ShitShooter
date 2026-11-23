@@ -40,6 +40,15 @@ pub struct Weapon {
     pub headshot: f32,
     /// The 3D model drawn for it. Without one it is drawn as a few boxes of `size`.
     pub model: Option<Model>,
+    /// Aimed, its shots close up tighter the longer it is held there.
+    pub choke: Option<Choke>,
+}
+
+/// Holding a gun aimed narrows its spread from `aim_spread` down to `spread`
+/// over `time` seconds. Letting go of aim or firing opens it up again.
+pub struct Choke {
+    pub spread: f32,
+    pub time: f32,
 }
 
 /// A weapon's glTF model. It is scaled to the weapon's `size` length and centred
@@ -134,6 +143,7 @@ pub const KNIFE_RANGE: f32 = 2.6;
 pub const DRAW_TIME: f32 = 0.35;
 
 pub const RIFLE: WeaponId = 0;
+pub const SHOTGUN: WeaponId = 2;
 pub const SNIPER: WeaponId = 3;
 pub const PISTOL: WeaponId = 4;
 pub const KNIFE: WeaponId = 5;
@@ -168,6 +178,7 @@ pub const WEAPONS: [Weapon; 6] = [
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX],
         }),
+        choke: None,
     },
     Weapon {
         name: "SMG",
@@ -194,6 +205,7 @@ pub const WEAPONS: [Weapon; 6] = [
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX],
         }),
+        choke: None,
     },
     Weapon {
         name: "Shotgun",
@@ -219,6 +231,10 @@ pub const WEAPONS: [Weapon; 6] = [
             path: "models/weapons/Shotgun.glb",
             barrel_plus_z: true,
             sights: &[],
+        }),
+        choke: Some(Choke {
+            spread: 0.015,
+            time: 0.5,
         }),
     },
     Weapon {
@@ -246,6 +262,7 @@ pub const WEAPONS: [Weapon; 6] = [
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX, SCOPE],
         }),
+        choke: None,
     },
     Weapon {
         name: "Pistol",
@@ -272,6 +289,7 @@ pub const WEAPONS: [Weapon; 6] = [
             barrel_plus_z: false,
             sights: &[RED_DOT, REFLEX],
         }),
+        choke: None,
     },
     Weapon {
         name: "Knife",
@@ -299,6 +317,7 @@ pub const WEAPONS: [Weapon; 6] = [
             barrel_plus_z: true,
             sights: &[],
         }),
+        choke: None,
     },
 ];
 
@@ -342,6 +361,9 @@ mod tests {
         for gun in &WEAPONS[..GUN_COUNT as usize] {
             assert!(gun.pellets >= 1 && gun.magazine >= 1 && gun.speed > 50.0, "{}", gun.name);
             assert!(gun.aim_spread <= gun.hip_spread, "{}", gun.name);
+            if let Some(choke) = &gun.choke {
+                assert!(choke.spread < gun.aim_spread && choke.time > 0.0, "{}", gun.name);
+            }
         }
     }
 
