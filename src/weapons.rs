@@ -46,15 +46,16 @@ pub struct Model {
     pub path: &'static str,
     /// The barrel points along +Z in the file (forward in the game is -Z).
     pub barrel_plus_z: bool,
-    /// The file has a `SightMount` node, so the gun can carry any of `SIGHTS`.
-    /// See `gun_model.rs`.
-    pub sight_mount: bool,
+    /// The sights it can carry besides its iron sights, on the file's
+    /// `SightMount` node (see `gun_model.rs`). Empty without a mount.
+    pub sights: &'static [SightId],
 }
 
 pub type SightId = u8;
 /// No sight: the gun's own iron sights.
 pub const IRON_SIGHTS: SightId = 0;
 pub const RED_DOT: SightId = 1;
+pub const SCOPE: SightId = 2;
 
 pub struct Sight {
     pub name: &'static str,
@@ -63,16 +64,31 @@ pub struct Sight {
     /// `IronSight...` are hidden under it, and aiming lines up the dot with the
     /// crosshair. `None` for the iron sights.
     pub path: Option<&'static str>,
+    /// Field of view factor when aiming through it, instead of the gun's own.
+    pub zoom: Option<f32>,
+    /// Fully aimed, the view through it is a scope's: the gun is hidden and a
+    /// lens with a reticle fills the screen.
+    pub overlay: bool,
 }
 
-pub const SIGHTS: [Sight; 2] = [
+pub const SIGHTS: [Sight; 3] = [
     Sight {
         name: "Iron sights",
         path: None,
+        zoom: None,
+        overlay: false,
     },
     Sight {
         name: "Red dot",
         path: Some("models/sights/red_dot.glb"),
+        zoom: None,
+        overlay: false,
+    },
+    Sight {
+        name: "Scope",
+        path: Some("models/sights/scope.glb"),
+        zoom: Some(0.25),
+        overlay: true,
     },
 ];
 
@@ -81,15 +97,20 @@ pub fn sight(id: SightId) -> &'static Sight {
     SIGHTS.get(id as usize).unwrap_or(&SIGHTS[IRON_SIGHTS as usize])
 }
 
-/// Whether a weapon can carry a sight other than its iron sights.
-pub fn takes_sights(id: WeaponId) -> bool {
-    weapon(id).model.as_ref().is_some_and(|model| model.sight_mount)
+/// The sights a weapon can carry besides its iron sights.
+pub fn sights_for(id: WeaponId) -> &'static [SightId] {
+    weapon(id).model.as_ref().map_or(&[], |model| model.sights)
 }
 
-/// The sight a weapon really carries when `wanted` is asked for: guns without
-/// a mount (and unknown sights) get iron sights.
+/// Whether a weapon can carry a sight other than its iron sights.
+pub fn takes_sights(id: WeaponId) -> bool {
+    !sights_for(id).is_empty()
+}
+
+/// The sight a weapon really carries when `wanted` is asked for: a sight it
+/// cannot take (or an unknown one) leaves it with its iron sights.
 pub fn sight_on(weapon_id: WeaponId, wanted: SightId) -> SightId {
-    if takes_sights(weapon_id) && (wanted as usize) < SIGHTS.len() {
+    if sights_for(weapon_id).contains(&wanted) {
         wanted
     } else {
         IRON_SIGHTS
@@ -102,6 +123,7 @@ pub const KNIFE_RANGE: f32 = 2.6;
 pub const DRAW_TIME: f32 = 0.35;
 
 pub const RIFLE: WeaponId = 0;
+pub const SNIPER: WeaponId = 3;
 pub const PISTOL: WeaponId = 4;
 pub const KNIFE: WeaponId = 5;
 /// Not in the table: used only to label grenade kills.
@@ -132,7 +154,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/M4A1.gltf",
             barrel_plus_z: true,
-            sight_mount: true,
+            sights: &[RED_DOT],
         }),
     },
     Weapon {
@@ -157,7 +179,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/MP7.gltf",
             barrel_plus_z: true,
-            sight_mount: true,
+            sights: &[RED_DOT],
         }),
     },
     Weapon {
@@ -193,7 +215,7 @@ pub const WEAPONS: [Weapon; 6] = [
         gravity: 3.0,
         hip_spread: 0.05,
         aim_spread: 0.0,
-        zoom: 0.28,
+        zoom: 0.55,
         mobility: 0.9,
         size: [0.035, 0.05, 0.44],
         pitch: 0.55,
@@ -203,7 +225,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/SCAR.gltf",
             barrel_plus_z: true,
-            sight_mount: true,
+            sights: &[RED_DOT, SCOPE],
         }),
     },
     Weapon {
@@ -228,7 +250,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/M1911Tactical.gltf",
             barrel_plus_z: false,
-            sight_mount: true,
+            sights: &[RED_DOT],
         }),
     },
     Weapon {

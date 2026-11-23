@@ -94,7 +94,7 @@ impl Plugin for UiPlugin {
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
                     update_rosters,
-                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_key_hints, update_wheel)
+                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_scope_view, update_key_hints, update_wheel)
                         .run_if(in_state(AppState::Playing)),
                 ),
             );
@@ -1416,7 +1416,48 @@ fn hit_tick(dx: f32, dy: f32) -> impl Bundle {
     )
 }
 
-fn spawn_hud(mut commands: Commands) {
+fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    // The view through a scope, under the rest of the HUD: its lens is a
+    // square as tall as the screen, black bars fill the sides.
+    let lens = images.add(scope_lens_image());
+    let side = || {
+        (
+            ScopeSide,
+            Node {
+                flex_grow: 1.0,
+                height: percent(100),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+            Pickable::IGNORE,
+        )
+    };
+    commands.spawn((
+        ScopeView,
+        hud_anchor(Node {
+            width: percent(100),
+            height: percent(100),
+            flex_direction: FlexDirection::Row,
+            ..default()
+        }),
+        Visibility::Hidden,
+        children![
+            side(),
+            (
+                ScopeLens,
+                Node {
+                    height: percent(100),
+                    aspect_ratio: Some(1.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                ImageNode::new(lens),
+                Pickable::IGNORE,
+            ),
+            side(),
+        ],
+    ));
+
     commands.spawn((hud_layer(), Overlay::DamageFlash, BackgroundColor(Color::NONE)));
     commands.spawn((hud_layer(), Overlay::Smoke, BackgroundColor(Color::NONE)));
     commands.spawn((hud_layer(), Overlay::Blind, BackgroundColor(Color::NONE)));
@@ -2050,6 +2091,86 @@ fn update_hud_shapes(
         if background.0 != color {
             background.0 = color;
         }
+    }
+}
+
+/// The view through a scope (see `LocalPlayer::scope_view`): the lens in the
+/// middle, and a black bar on each side of it.
+#[derive(Component)]
+struct ScopeView;
+#[derive(Component)]
+struct ScopeLens;
+#[derive(Component)]
+struct ScopeSide;
+
+/// Pixels across the scope's lens texture.
+const SCOPE_LENS_SIZE: u32 = 1024;
+
+/// A scope's lens: clear in the middle, with a duplex reticle (thin lines
+/// through the centre, thick posts towards the edge), darkening to black at
+/// the rim and beyond it.
+fn scope_lens_image() -> Image {
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
+    let size = SCOPE_LENS_SIZE;
+    // One pixel, with the texture running from -1 to 1 across.
+    let pixel = 2.0 / size as f32;
+    // How much of a pixel lies within `half` of a line `distance` away.
+    let cover = |distance: f32, half: f32| ((half - distance) / pixel + 0.5).clamp(0.0, 1.0);
+    let rim = 0.97;
+    let (thin, thick, posts_from) = (0.0026, 0.012, 0.36);
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let u = (x as f32 + 0.5) * pixel - 1.0;
+            let v = (y as f32 + 0.5) * pixel - 1.0;
+            let r = (u * u + v * v).sqrt();
+            let outside = ((r - rim) / pixel + 0.5).clamp(0.0, 1.0);
+            let shade = ((r - (rim - 0.16)) / 0.16).clamp(0.0, 1.0).powi(2) * 0.85;
+            let posts = |along: f32, across: f32| {
+                cover(across.abs(), thick) * ((along.abs() - posts_from) / pixel + 0.5).clamp(0.0, 1.0)
+            };
+            let reticle = cover(u.abs(), thin)
+                .max(cover(v.abs(), thin))
+                .max(posts(u, v))
+                .max(posts(v, u));
+            let alpha = outside.max(shade).max(reticle);
+            data.extend_from_slice(&[0, 0, 0, (alpha * 255.0).round() as u8]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+fn update_scope_view(
+    player: Res<LocalPlayer>,
+    mut view: Single<&mut Visibility, With<ScopeView>>,
+    mut lens: Single<&mut ImageNode, With<ScopeLens>>,
+    mut sides: Query<&mut BackgroundColor, With<ScopeSide>>,
+) {
+    let fade = player.scope_view();
+    view.set_if_neq(if fade > 0.0 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    });
+    let color = Color::srgba(1.0, 1.0, 1.0, fade);
+    if lens.color != color {
+        lens.color = color;
+    }
+    for mut side in &mut sides {
+        side.set_if_neq(BackgroundColor(Color::srgba(0.0, 0.0, 0.0, fade)));
     }
 }
 

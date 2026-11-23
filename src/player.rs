@@ -19,7 +19,7 @@ use crate::{
     net::{Connection, NetMsg, Session},
     protocol::*,
     settings::{Action, ActionInput, Settings, SettingsMenu},
-    weapons::{DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, weapon},
+    weapons::{DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, sight, sight_on, weapon},
     world::{GameMap, MainCamera, ViewModel, ViewModelPart},
 };
 
@@ -297,7 +297,22 @@ impl LocalPlayer {
 
     /// The sight on the weapon in hand.
     pub fn sight_id(&self) -> SightId {
-        self.guns.get(self.slot).map_or(IRON_SIGHTS, |gun| gun.sight)
+        self.guns.get(self.slot).map_or(IRON_SIGHTS, |gun| sight_on(gun.weapon, gun.sight))
+    }
+
+    /// Field of view factor when fully aimed: the sight's own, or the gun's.
+    pub fn zoom(&self) -> f32 {
+        sight(self.sight_id()).zoom.unwrap_or(self.weapon().zoom)
+    }
+
+    /// 0 -> 1 as the view through a scope fades in, near the end of aiming.
+    /// Always 0 with other sights.
+    pub fn scope_view(&self) -> f32 {
+        if self.alive && sight(self.sight_id()).overlay {
+            ((self.aim - 0.8) / 0.15).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 
     pub fn weapon(&self) -> &'static Weapon {
@@ -410,7 +425,7 @@ fn look(
         return;
     }
     // Aiming turns the view slower in step with the zoom, so it feels the same on screen.
-    let aimed = player.weapon().zoom * settings.ads_sensitivity;
+    let aimed = player.zoom() * settings.ads_sensitivity;
     let sensitivity = settings.sensitivity * 0.001 * (1.0 + (aimed - 1.0) * player.aim);
     let p = &mut *player;
     let turn = -mouse.delta.x * sensitivity;
@@ -664,7 +679,7 @@ fn follow_camera(
     if let Projection::Perspective(perspective) = &mut *projection {
         let boost = ((player.horizontal_speed() - RUN_SPEED) / 25.0).clamp(0.0, 1.0) * 0.22;
         let hip = settings.fov.to_radians() + boost;
-        let target = hip * (1.0 + (player.weapon().zoom - 1.0) * player.aim);
+        let target = hip * (1.0 + (player.zoom() - 1.0) * player.aim);
         perspective.fov += (target - perspective.fov) * (dt * 14.0).min(1.0);
     }
 
@@ -765,7 +780,8 @@ fn follow_camera(
             *visibility = wanted;
         }
     }
-    let wanted = if player.alive {
+    // Looking through a scope, its lens fills the screen instead.
+    let wanted = if player.alive && player.scope_view() < 1.0 {
         Visibility::Inherited
     } else {
         Visibility::Hidden

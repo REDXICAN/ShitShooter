@@ -15,8 +15,8 @@ use crate::{
     AppState, LaunchArgs,
     player::Controls,
     weapons::{
-        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SIGHTS, SightId, WeaponId, next_gun, sight, sight_on,
-        takes_sights, weapon,
+        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, WeaponId, next_gun, sight,
+        sight_on, sights_for, takes_sights, weapon,
     },
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
 };
@@ -363,14 +363,15 @@ impl Settings {
         sight_on(gun, self.sights.get(gun as usize).copied().unwrap_or(IRON_SIGHTS))
     }
 
-    /// Puts the next sight on the gun in a slot. Guns without a sight mount
-    /// keep their iron sights.
+    /// Puts the next sight the gun in a slot can take on it: its iron sights,
+    /// then each of `weapons::sights_for` in turn.
     pub fn cycle_sight(&mut self, slot: usize) {
         let gun = self.gun(slot);
-        if let Some(sight) = self.sights.get_mut(gun as usize)
-            && takes_sights(gun)
-        {
-            *sight = (*sight + 1) % SIGHTS.len() as SightId;
+        let current = self.sight_for(gun);
+        let choices: Vec<SightId> = std::iter::once(IRON_SIGHTS).chain(sights_for(gun).iter().copied()).collect();
+        let next = choices.iter().position(|&s| s == current).map_or(0, |i| (i + 1) % choices.len());
+        if let Some(sight) = self.sights.get_mut(gun as usize) {
+            *sight = choices[next];
         }
     }
 
@@ -467,10 +468,12 @@ impl Settings {
     }
 }
 
-/// The rifle comes with a red dot; every other gun with its iron sights.
+/// The rifle comes with a red dot and the sniper with a scope; every other
+/// gun with its iron sights.
 fn default_sights() -> [SightId; GUN_COUNT as usize] {
     let mut sights = [IRON_SIGHTS; GUN_COUNT as usize];
     sights[RIFLE as usize] = RED_DOT;
+    sights[SNIPER as usize] = SCOPE;
     sights
 }
 
@@ -894,6 +897,26 @@ mod tests {
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
         settings.cycle_sight(1);
         assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
+    }
+
+    #[test]
+    fn only_the_sniper_takes_the_scope() {
+        let mut settings = Settings::parse("primary = Sniper
+secondary = Pistol
+sight.Pistol = Scope
+");
+        assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
+        assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            settings.cycle_sight(0);
+            seen.push(settings.sight_for(SNIPER));
+        }
+        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, SCOPE]);
+        settings.cycle_sight(1);
+        assert_eq!(settings.sight_for(PISTOL), RED_DOT);
+        settings.cycle_sight(1);
+        assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
     }
 
     #[test]

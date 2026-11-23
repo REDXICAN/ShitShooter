@@ -6,9 +6,9 @@
 //! loaded it is measured, turned barrel-forward, centred on the holder and
 //! scaled to its weapon's `size` length, so a new model drops in as it is.
 //!
-//! A gun with a `SightMount` node can carry any of `SIGHTS`, each another glTF
-//! file in metres. Every sight is mounted on every such gun, and the holder's
-//! `sight` picks the one shown. The mount's position and scale (sight metres
+//! A gun with a `SightMount` node can carry the sights its `Model::sights`
+//! lists, each another glTF file in metres. All of them are mounted on it, and
+//! the holder's `sight` picks the one shown. The mount's position and scale (sight metres
 //! to gun-file units) are set in the gun's file. The gun's `IronSight...` nodes
 //! are hidden under a sight, and aiming lines up the sight's `AimPoint` node
 //! with the crosshair.
@@ -228,7 +228,7 @@ fn fit_models(
             }
         }
 
-        if !spec.sight_mount {
+        if spec.sights.is_empty() {
             continue;
         }
         let named = |prefix: &'static str| {
@@ -243,8 +243,9 @@ fn fit_models(
         model.sights = scenes
             .sights
             .iter()
-            .map(|sight| {
-                let sight = sight.as_ref()?;
+            .enumerate()
+            .map(|(id, sight)| {
+                let sight = sight.as_ref().filter(|_| spec.sights.contains(&(id as SightId)))?;
                 let entity = commands
                     .spawn((WorldAssetRoot(sight.clone()), Visibility::Hidden, ChildOf(mount)))
                     .id();
