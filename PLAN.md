@@ -9,6 +9,35 @@ see `src/player.rs` `AIR_WISH_SPEED` / `AIR_ACCEL`; only tuning is left (step 9)
 Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 **reload style 2 (Ring)**.
 
+## Before you start
+
+- **Bevy 0.20.1.** Many APIs differ from older Bevy versions. Check names
+  against the sources in `~/.cargo/registry/src/*/bevy_*-0.20.1/`, not from
+  memory.
+- **Build and test:** `cargo build`, then `cargo test` (the tests are in
+  `src/server.rs` and other modules). Fix every warning the change adds.
+- **Check it in the game.** `cargo run -- --host --bots 3` starts a lobby with
+  bots, skipping the menu. `cargo run -- --selftest <dir>` plays a short match
+  against bots by itself and saves screenshots to `<dir>` (`src/devtools.rs`);
+  extend its script when a step adds something to look at. F12 saves a
+  screenshot to `screenshots/`. Feel and tuning (steps 3, 7, 9) need the user
+  to play: ask them.
+- **Git:** commit straight to `main`, never on a branch. One step, one
+  commit, or a few if a step is big. Do not push unless the user asks: every
+  push to `main` builds a release that the launcher installs for every player.
+- **Commit messages:** look at `git log`. The subject is one plain sentence
+  about what changes for the player; the body says why. End with the
+  `Co-Authored-By` line the session gives you.
+- **Blender 5.3:** `C:/Program Files/Blender Foundation/Blender 5.3/blender.exe`.
+  Run scripts with `--background --factory-startup --python <script> -- <args>`;
+  `art/grenades.py` is an example. Export with the settings it uses:
+  `export_format="GLB", export_yup=True, export_apply=True`. Colours in
+  scripts are sRGB and must be made linear for Blender (see `material()`).
+- **glTF guns** (`M4A1`, `MP7`, `SCAR`, `M1911Tactical`) are JSON with the
+  mesh data embedded as base64, so a node can be renamed with a text edit.
+- **Prototype branch:** steps 4 and 5 read REDXICAN's prototype. `pull/4/head`
+  still works after the PR is closed.
+
 ## Order
 
 1. [ ] Damage direction (#2)
@@ -50,12 +79,19 @@ needs it (7, 8).
 "Subtle, like Apex."
 
 - On `ServerMsg::Hit` with `victim == me` and `attacker != me`, take the
-  attacker's position (their `RemotePlayer` transform) relative to our yaw.
+  attacker's position (their `RemotePlayer` transform; bots are remote
+  players too) relative to our yaw.
 - Show a thin arc on a ring around the crosshair, pointing at them, and fade it
   over about 1 s. Several hits from different sides each get their own arc.
-- Grenade hits: point at the explosion we just saw, not at the thrower.
+  The arc keeps pointing at where the hit came from as we turn.
+- Grenade hits: `ServerMsg::Hit` says nothing about grenades, but a frag's
+  `ServerMsg::Explosion { pos, .. }` arrives with it. If we got an explosion
+  within `GRENADE_RADIUS` of us in the last ~0.2 s, point at its `pos`, not at
+  the thrower.
 - Files: `src/player.rs` (next to `damage_flash`, line ~386), new overlay in
   `src/ui.rs` (next to `Overlay::DamageFlash`). No protocol change.
+- Check: with `--bots`, get shot from the side and from behind, and by a
+  frag.
 
 ## 2. Bodies stay after death (#3)
 
@@ -67,7 +103,11 @@ nothing to teabag.
 - Keep it about 8 s, then sink it into the floor and despawn it. Despawn
   bodies when the match ends (`DespawnOnExit`).
 - Crouching is already sent and shown, so the teabag works once bodies exist.
-- Client only. No protocol change.
+- Client only. No protocol change. A player who respawns at once (a click)
+  must not take their body with them: the body is its own entity, not the
+  `RemotePlayer`.
+- Check: kill a bot; the body lies where it fell, stays, then sinks, while
+  the bot respawns elsewhere.
 
 ## 3. Shotgun choke (#7, part 1)
 
@@ -79,7 +119,11 @@ Tighter pellets the longer you aim, like a choke.
   `time` (about 0.5 s). Unaiming or firing resets it.
 - Spread is picked on the shooter's side (`src/combat.rs`, ~line 338), so the
   server does not change.
-- Feedback: a click sound and a smaller crosshair once fully choked.
+- Feedback: the crosshair today is only a dot (`src/ui.rs`, ~line 1440). For
+  the shotgun while aiming, add a thin ring around it that shrinks with the
+  spread, and a soft click (a new `synth_*` sound in `src/audio.rs`) once
+  fully choked.
+- Start from: choke spread 0.015 (aim spread is 0.045), 0.5 s.
 - In the game it is just "Shotgun". No Apex names.
 
 ## 4. Loadout menu, layout 1 (PR #4)
@@ -117,7 +161,13 @@ Do not add the `prototypes/` folder to `main`.
 - Also render a small side image of each gun (with its sight) for step 5.
 - Pause menu card stays the size it is now. In the lobby it may be about
   100 px taller.
-- Check at 1280×720 and 1920×1080.
+- Esc while dead opens the pause menu as today; the card in it and the one on
+  the death screen must not both take clicks.
+- Check at 1280×720 and 1920×1080: pause menu, lobby and death screen.
+  Picks must still be saved (`Settings::save` in `src/settings.rs`; the
+  old buttons go through `cycle_gun` and friends), and the grenade must still
+  reach the server (`ClientMsg::Loadout`, sent from `src/net.rs`; guns and
+  sights are the client's own).
 
 ## 5. Weapon panel, type 1 with the ring reload (PR #4)
 
@@ -171,6 +221,8 @@ For each gun:
   so keep it small enough to suit the pistol too.
 - Re-export, then check every gun still sits right in first person, aimed and
   at the hip (the fitting measures the model, so a moved part can shift it).
+- Leave the `.blend1` backups alone; `.gitignore` already skips them. Commit
+  the new `.blend` files with the exported models.
 
 ## 7. Reload animations on the guns
 
@@ -226,7 +278,9 @@ Zoom comes only from the sight, never from the gun:
 
 ## 9. Air strafe tuning (#5)
 
-- Play against the videos in discussion #5 and tune `AIR_WISH_SPEED` and
+- This step is done with the user: it is about feel, which only playing
+  shows. Offer them two or three settings to try against the videos in
+  discussion #5 (`gh api graphql` can read it), by tuning `AIR_WISH_SPEED` and
   `AIR_ACCEL` in `src/player.rs`.
 - Optional: a host setting for air acceleration in the lobby, sent to every
   player (like `sv_airaccelerate`). Movement runs on each client, so the value
