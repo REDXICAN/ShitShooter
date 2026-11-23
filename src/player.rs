@@ -18,6 +18,7 @@ use crate::{
     map::{self, CROUCH_EYE, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
+    remote::RemotePlayer,
     settings::{Action, ActionInput, Settings, SettingsMenu},
     weapons::{DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, sight, sight_on, weapon},
     world::{GameMap, MainCamera, ViewModel, ViewModelPart},
@@ -190,6 +191,8 @@ pub struct LocalPlayer {
     pub kill_marker: f32,
     /// 1 right after taking damage, decays to 0.
     pub damage_flash: f32,
+    /// Where recent hits on us came from, shown around the crosshair.
+    pub damage_arcs: Vec<DamageArc>,
     /// Crouching or sliding: the collision box is the short one.
     pub crouching: bool,
     pub sliding: bool,
@@ -243,6 +246,7 @@ impl Default for LocalPlayer {
             headshot_marker: 0.0,
             kill_marker: 0.0,
             damage_flash: 0.0,
+            damage_arcs: Vec::new(),
             crouching: false,
             sliding: false,
             slide_boost_cooldown: 0.0,
@@ -256,6 +260,52 @@ impl Default for LocalPlayer {
             hold: 0.0,
             blind: 0.0,
         }
+    }
+}
+
+/// Seconds an arc showing where a hit came from takes to fade.
+pub const DAMAGE_ARC_TIME: f32 = 1.0;
+/// A frag that went off this recently near us is what just hurt us.
+const BLAST_WINDOW: f64 = 0.2;
+
+/// Where a hit on us came from. It stays pointing at that spot as we turn.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DamageArc {
+    /// More hits from the same player (or grenade) move the same arc.
+    pub from: DamageSource,
+    pub at: Vec3,
+    /// Seconds before it has faded out.
+    pub left: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DamageSource {
+    Player(PlayerId),
+    /// The id of the grenade that went off.
+    Blast(u32),
+}
+
+impl LocalPlayer {
+    /// Shows where a hit came from: a new arc, or the one already pointing at
+    /// the same attacker, turned to where they are now.
+    fn hurt_from(&mut self, from: DamageSource, at: Vec3) {
+        let arc = DamageArc {
+            from,
+            at,
+            left: DAMAGE_ARC_TIME,
+        };
+        match self.damage_arcs.iter_mut().find(|arc| arc.from == from) {
+            Some(old) => *old = arc,
+            None => self.damage_arcs.push(arc),
+        }
+    }
+
+    /// Which way a spot lies from us, in radians clockwise from straight ahead.
+    pub fn bearing(&self, at: Vec3) -> f32 {
+        let to = at - self.pos;
+        let forward = map::look_dir(self.yaw, 0.0);
+        let right = Vec3::new(-forward.z, 0.0, forward.x);
+        to.dot(right).atan2(to.dot(forward))
     }
 }
 
@@ -351,12 +401,26 @@ fn hide_view_model(mut view_model: Single<&mut Visibility, With<ViewModel>>) {
 
 fn handle_net(
     mut messages: MessageReader<NetMsg>,
+    time: Res<Time<Real>>,
     session: Res<Session>,
     settings: Res<Settings>,
     mut player: ResMut<LocalPlayer>,
+    remotes: Query<(&RemotePlayer, &Transform)>,
+    // Frags that went off near us lately: (grenade id, where, when).
+    mut blasts: Local<Vec<(u32, Vec3, f64)>>,
 ) {
+    let now = time.elapsed_secs_f64();
+    blasts.retain(|(.., when)| now - when < BLAST_WINDOW);
     for NetMsg(msg) in messages.read() {
         match msg {
+            // The server says nothing about grenades in a hit, but sends the
+            // explosion just before the hits it causes.
+            ServerMsg::Explosion { id, kind: FRAG, pos } => {
+                let pos = Vec3::from(*pos);
+                if pos.distance(player.pos) < GRENADE_RADIUS + PLAYER_HALF.y {
+                    blasts.push((*id, pos, now));
+                }
+            }
             ServerMsg::MatchStarted { .. } => *player = LocalPlayer::default(),
             ServerMsg::Spawn {
                 id,
@@ -380,10 +444,29 @@ fn handle_net(
                     ..default()
                 };
             }
-            ServerMsg::Hit { victim, health, armor, .. } if *victim == session.my_id => {
+            ServerMsg::Hit {
+                victim,
+                attacker,
+                health,
+                armor,
+                ..
+            } if *victim == session.my_id => {
                 player.health = *health;
                 player.armor = *armor;
                 player.damage_flash = 1.0;
+                let attacker_at = || {
+                    remotes
+                        .iter()
+                        .find(|(remote, _)| remote.id == *attacker)
+                        .map(|(_, transform)| transform.translation)
+                };
+                if let Some(&(id, pos, _)) = blasts.last() {
+                    player.hurt_from(DamageSource::Blast(id), pos);
+                } else if *attacker != session.my_id
+                    && let Some(at) = attacker_at()
+                {
+                    player.hurt_from(DamageSource::Player(*attacker), at);
+                }
             }
             ServerMsg::ArmorPickup { id, armor, .. } if *id == session.my_id => player.armor = *armor,
             // Grenade damage is decided by the server, so this is where we learn of it.
@@ -683,6 +766,12 @@ fn follow_camera(
     player.headshot_marker = (player.headshot_marker - dt).max(0.0);
     player.kill_marker = (player.kill_marker - dt * 1.6).max(0.0);
     player.damage_flash = (player.damage_flash - dt * 2.5).max(0.0);
+    if !player.damage_arcs.is_empty() {
+        for arc in &mut player.damage_arcs {
+            arc.left -= dt;
+        }
+        player.damage_arcs.retain(|arc| arc.left > 0.0);
+    }
     player.blind = (player.blind - dt).max(0.0);
     let holding = player.hand.is_some() as u8 as f32;
     player.hold += (holding - player.hold) * (dt * 12.0).min(1.0);

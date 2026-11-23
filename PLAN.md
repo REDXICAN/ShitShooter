@@ -40,7 +40,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 
 ## Order
 
-1. [ ] Damage direction (#2)
+1. [x] Damage direction (#2)
 2. [ ] Bodies stay after death (#3)
 3. [ ] Shotgun choke when aiming (#7, part 1)
 4. [ ] Loadout menu, layout 1 (PR #4)

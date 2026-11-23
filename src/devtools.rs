@@ -204,14 +204,12 @@ fn selftest_play(
     remotes: Query<(&RemotePlayer, &Transform)>,
     cue_count: Res<CueCount>,
     mut last_target: Local<Option<(u64, Vec3)>>,
-    mut marker_captured: Local<bool>,
-    mut countdown_captured: Local<bool>,
-    mut ally_captured: Local<bool>,
+    mut captured: Local<Captured>,
 ) {
     // The script starts once the countdown is over.
     if session.frozen() {
-        if session.countdown < 2.5 && !*countdown_captured {
-            *countdown_captured = true;
+        if session.countdown < 2.5 && !captured.countdown {
+            captured.countdown = true;
             println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
             test.capture(&mut commands, "countdown.png");
         }
@@ -228,17 +226,28 @@ fn selftest_play(
             let to = mate - eye;
             player.yaw = (-to.x).atan2(-to.z);
             player.pitch = to.y.atan2(to.with_y(0.0).length());
-            if session.countdown < 1.2 && !*ally_captured {
-                *ally_captured = true;
+            if session.countdown < 1.2 && !captured.ally {
+                captured.ally = true;
                 println!("[selftest] nearest teammate {:.1} m away", to.length());
                 test.capture(&mut commands, "teammate.png");
             }
         }
         return;
     }
-    if player.hit_marker > 0.0 && !*marker_captured {
-        *marker_captured = true;
+    if player.hit_marker > 0.0 && !captured.marker {
+        captured.marker = true;
         test.capture(&mut commands, "hit.png");
+    }
+    if let Some(arc) = player.damage_arcs.first()
+        && !captured.hurt
+    {
+        captured.hurt = true;
+        println!(
+            "[selftest] hurt from {:?}, {:.0} degrees off our aim",
+            arc.from,
+            player.bearing(arc.at).to_degrees()
+        );
+        test.capture(&mut commands, "hurt.png");
     }
     test.clock += time.delta_secs();
     let t = test.clock;
@@ -377,6 +386,15 @@ fn selftest_play(
         println!("[selftest] mode {} team scores {:?} my team {}", session.mode, session.team_scores, session.team_of(session.my_id));
         connection.send(&ClientMsg::EndMatch);
     }
+}
+
+/// The screenshots of `selftest_play` taken when something first happens.
+#[derive(Default)]
+struct Captured {
+    marker: bool,
+    countdown: bool,
+    ally: bool,
+    hurt: bool,
 }
 
 /// Tallies the sound cues of a self-test run: (own, others') per kind.

@@ -22,7 +22,7 @@ use crate::{
     net::{self, Connection, MenuStatus, Session},
     paint::{Skins, palette_color},
     paint_editor::on_open_paint,
-    player::{Controls, DASH_COOLDOWN, LocalPlayer},
+    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
@@ -99,7 +99,15 @@ impl Plugin for UiPlugin {
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
                     update_rosters,
-                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_scope_view, update_key_hints)
+                    (
+                        update_hud,
+                        update_hud_shapes,
+                        update_overlays,
+                        update_crosshair,
+                        update_scope_view,
+                        update_key_hints,
+                        update_damage_arcs,
+                    )
                         .run_if(in_state(AppState::Playing)),
                 ),
             );
@@ -1472,6 +1480,35 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
+    // Where hits come from: arcs on a ring around the crosshair.
+    let arc = images.add(damage_arc_image());
+    let arcs = (0..DAMAGE_ARCS).map(move |index| {
+        (
+            DamageArcNode(index),
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                height: percent(100),
+                ..default()
+            },
+            ImageNode::new(arc.clone()).with_color(Color::NONE),
+            UiTransform::default(),
+            Pickable::IGNORE,
+        )
+    });
+    commands.spawn((
+        hud_layer(),
+        children![(
+            Node {
+                width: px(DAMAGE_RING),
+                height: px(DAMAGE_RING),
+                ..default()
+            },
+            Pickable::IGNORE,
+            Children::spawn(SpawnIter(arcs)),
+        )],
+    ));
+
     // The grenade in hand, just under the crosshair.
     commands.spawn((hud_line(55.0), children![hud_text(18.0, ACCENT, Hud::Hand)]));
 
@@ -2131,38 +2168,22 @@ struct ScopeSide;
 /// Pixels across the scope's lens texture.
 const SCOPE_LENS_SIZE: u32 = 1024;
 
-/// A scope's lens: clear in the middle, with a duplex reticle (thin lines
-/// through the centre, thick posts towards the edge), darkening to black at
-/// the rim and beyond it.
-fn scope_lens_image() -> Image {
+/// A square texture of one colour, `size` pixels across, see-through by
+/// `alpha(u, v, pixel)`: `u` and `v` run from -1 to 1 across and down, and
+/// `pixel` is the width of one pixel in those units.
+pub fn mask_image(size: u32, rgb: [u8; 3], alpha: impl Fn(f32, f32, f32) -> f32) -> Image {
     use bevy::{
         asset::RenderAssetUsages,
         render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     };
-    let size = SCOPE_LENS_SIZE;
-    // One pixel, with the texture running from -1 to 1 across.
     let pixel = 2.0 / size as f32;
-    // How much of a pixel lies within `half` of a line `distance` away.
-    let cover = |distance: f32, half: f32| ((half - distance) / pixel + 0.5).clamp(0.0, 1.0);
-    let rim = 0.97;
-    let (thin, thick, posts_from) = (0.0026, 0.012, 0.36);
     let mut data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
             let u = (x as f32 + 0.5) * pixel - 1.0;
             let v = (y as f32 + 0.5) * pixel - 1.0;
-            let r = (u * u + v * v).sqrt();
-            let outside = ((r - rim) / pixel + 0.5).clamp(0.0, 1.0);
-            let shade = ((r - (rim - 0.16)) / 0.16).clamp(0.0, 1.0).powi(2) * 0.85;
-            let posts = |along: f32, across: f32| {
-                cover(across.abs(), thick) * ((along.abs() - posts_from) / pixel + 0.5).clamp(0.0, 1.0)
-            };
-            let reticle = cover(u.abs(), thin)
-                .max(cover(v.abs(), thin))
-                .max(posts(u, v))
-                .max(posts(v, u));
-            let alpha = outside.max(shade).max(reticle);
-            data.extend_from_slice(&[0, 0, 0, (alpha * 255.0).round() as u8]);
+            let a = alpha(u, v, pixel).clamp(0.0, 1.0);
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8]);
         }
     }
     Image::new(
@@ -2176,6 +2197,70 @@ fn scope_lens_image() -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+/// A scope's lens: clear in the middle, with a duplex reticle (thin lines
+/// through the centre, thick posts towards the edge), darkening to black at
+/// the rim and beyond it.
+fn scope_lens_image() -> Image {
+    let rim = 0.97;
+    let (thin, thick, posts_from) = (0.0026, 0.012, 0.36);
+    mask_image(SCOPE_LENS_SIZE, [0, 0, 0], |u, v, pixel| {
+        // How much of a pixel lies within `half` of a line `distance` away.
+        let cover = |distance: f32, half: f32| ((half - distance) / pixel + 0.5).clamp(0.0, 1.0);
+        let r = (u * u + v * v).sqrt();
+        let outside = ((r - rim) / pixel + 0.5).clamp(0.0, 1.0);
+        let shade = ((r - (rim - 0.16)) / 0.16).clamp(0.0, 1.0).powi(2) * 0.85;
+        let posts =
+            |along: f32, across: f32| cover(across.abs(), thick) * ((along.abs() - posts_from) / pixel + 0.5).clamp(0.0, 1.0);
+        let reticle = cover(u.abs(), thin)
+            .max(cover(v.abs(), thin))
+            .max(posts(u, v))
+            .max(posts(v, u));
+        outside.max(shade).max(reticle)
+    })
+}
+
+/// How many hits from different sides can show at once.
+const DAMAGE_ARCS: usize = 6;
+/// Pixels across the ring the arcs lie on.
+const DAMAGE_RING: f32 = 170.0;
+
+/// One of the arcs around the crosshair that point to where a hit came from
+/// (see `LocalPlayer::damage_arcs`).
+#[derive(Component)]
+struct DamageArcNode(usize);
+
+/// A thin arc at the top of a ring, fading towards its ends. Turned about the
+/// middle, it points any way.
+fn damage_arc_image() -> Image {
+    let (radius, half_width, half_angle) = (0.9, 0.035, 0.38);
+    mask_image(256, [255, 255, 255], |u, v, pixel| {
+        let r = (u * u + v * v).sqrt();
+        // Clockwise from straight up.
+        let angle = u.atan2(-v);
+        let across = ((half_width - (r - radius).abs()) / pixel + 0.5).clamp(0.0, 1.0);
+        let along = (1.0 - angle.abs() / half_angle).clamp(0.0, 1.0);
+        across * along.powf(0.6)
+    })
+}
+
+fn update_damage_arcs(
+    player: Res<LocalPlayer>,
+    mut arcs: Query<(&DamageArcNode, &mut ImageNode, &mut UiTransform)>,
+) {
+    for (arc, mut image, mut transform) in &mut arcs {
+        let Some(hit) = player.damage_arcs.get(arc.0) else {
+            if image.color != Color::NONE {
+                image.color = Color::NONE;
+            }
+            continue;
+        };
+        // Full for a moment, then it fades.
+        let fade = (hit.left / DAMAGE_ARC_TIME * 1.6).min(1.0);
+        image.color = Color::srgba(1.0, 0.3, 0.22, 0.85 * fade);
+        transform.rotation = Rot2::radians(player.bearing(hit.at));
+    }
 }
 
 fn update_scope_view(
