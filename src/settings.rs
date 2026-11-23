@@ -14,7 +14,10 @@ use bevy::{
 use crate::{
     AppState, LaunchArgs,
     player::Controls,
-    weapons::{GUN_COUNT, PISTOL, RIFLE, WeaponId, next_gun, weapon},
+    weapons::{
+        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SIGHTS, SightId, WeaponId, next_gun, sight, sight_on,
+        takes_sights, weapon,
+    },
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
 };
 
@@ -223,6 +226,9 @@ pub struct Settings {
     /// The guns carried in the two slots. Never the same gun twice.
     pub primary: WeaponId,
     pub secondary: WeaponId,
+    /// The sight picked for each gun, by weapon id. Guns without a sight
+    /// mount always have their iron sights.
+    pub sights: [SightId; GUN_COUNT as usize],
     binds: [Bind; Action::ALL.len()],
     /// False during the self-test, which must not touch the player's file.
     persist: bool,
@@ -241,6 +247,7 @@ impl Default for Settings {
             fullscreen: false,
             primary: RIFLE,
             secondary: PISTOL,
+            sights: default_sights(),
             binds: Action::ALL.map(|action| action.info().2),
             persist: false,
         }
@@ -331,6 +338,7 @@ impl Settings {
             fullscreen: self.fullscreen,
             primary: self.primary,
             secondary: self.secondary,
+            sights: self.sights,
             persist: self.persist,
             ..defaults
         };
@@ -342,6 +350,27 @@ impl Settings {
             self.primary = next_gun(self.primary, self.secondary);
         } else {
             self.secondary = next_gun(self.secondary, self.primary);
+        }
+    }
+
+    /// The gun in a slot (0 = primary, 1 = secondary).
+    pub fn gun(&self, slot: usize) -> WeaponId {
+        if slot == 0 { self.primary } else { self.secondary }
+    }
+
+    /// The sight a gun is handed out with.
+    pub fn sight_for(&self, gun: WeaponId) -> SightId {
+        sight_on(gun, self.sights.get(gun as usize).copied().unwrap_or(IRON_SIGHTS))
+    }
+
+    /// Puts the next sight on the gun in a slot. Guns without a sight mount
+    /// keep their iron sights.
+    pub fn cycle_sight(&mut self, slot: usize) {
+        let gun = self.gun(slot);
+        if let Some(sight) = self.sights.get_mut(gun as usize)
+            && takes_sights(gun)
+        {
+            *sight = (*sight + 1) % SIGHTS.len() as SightId;
         }
     }
 
@@ -390,6 +419,13 @@ impl Settings {
                 "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
+                _ if key.starts_with("sight.") => {
+                    let gun = gun_named(&key["sight.".len()..]);
+                    let picked = SIGHTS.iter().position(|s| s.name.eq_ignore_ascii_case(value));
+                    if let (Some(gun), Some(picked)) = (gun, picked) {
+                        settings.sights[gun as usize] = picked as SightId;
+                    }
+                }
                 _ => {
                     let action = key
                         .strip_prefix("bind.")
@@ -420,11 +456,22 @@ impl Settings {
             weapon(self.primary).name,
             weapon(self.secondary).name
         ));
+        for gun in (0..GUN_COUNT).filter(|gun| takes_sights(*gun)) {
+            text.push_str(&format!("sight.{} = {}
+", weapon(gun).name, sight(self.sights[gun as usize]).name));
+        }
         for action in Action::ALL {
             text.push_str(&format!("bind.{} = {}\n", action.info().1, self.bind(action).file_name()));
         }
         text
     }
+}
+
+/// The rifle comes with a red dot; every other gun with its iron sights.
+fn default_sights() -> [SightId; GUN_COUNT as usize] {
+    let mut sights = [IRON_SIGHTS; GUN_COUNT as usize];
+    sights[RIFLE as usize] = RED_DOT;
+    sights
 }
 
 fn gun_named(name: &str) -> Option<WeaponId> {
@@ -826,11 +873,27 @@ mod tests {
             fullscreen: true,
             primary: 3,
             secondary: 1,
+            sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, RED_DOT, RED_DOT],
             ..default()
         };
         settings.set_bind(Action::Grenade, Bind::Mouse(MouseButton::Middle));
         settings.set_bind(Action::Crouch, Bind::Key(KeyCode::KeyC));
         assert_eq!(Settings::parse(&settings.to_text()), settings);
+    }
+
+    #[test]
+    fn sights_go_only_on_guns_with_a_mount() {
+        let shotgun = gun_named("Shotgun").unwrap();
+        let smg = gun_named("SMG").unwrap();
+        let mut settings = Settings::parse("primary = Shotgun\nsecondary = SMG\nsight.Shotgun = Red dot\nsight.SMG = red DOT\n");
+        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
+        assert_eq!(settings.sight_for(smg), RED_DOT);
+        assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
+        assert_eq!(settings.sight_for(RIFLE), RED_DOT, "the rifle's default");
+        settings.cycle_sight(0);
+        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
+        settings.cycle_sight(1);
+        assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
     }
 
     #[test]

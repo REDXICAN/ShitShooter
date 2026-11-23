@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::weapons::WeaponId;
+use crate::weapons::{SightId, WeaponId};
 
 pub const DEFAULT_PORT: u16 = 7777;
 pub const MAX_PLAYERS: usize = 16;
@@ -143,7 +143,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-6:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-7:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -217,6 +217,8 @@ pub struct ClientState {
     pub flags: u8,
     /// The weapon in hand.
     pub weapon: WeaponId,
+    /// The sight on it.
+    pub sight: SightId,
     /// Number of spawns this client has processed. Lets the server ignore stale
     /// positions that were sent before a respawn teleport arrived.
     pub spawn_seq: u32,
@@ -308,6 +310,8 @@ pub struct PlayerSnap {
     pub pitch: f32,
     pub flags: u8,
     pub weapon: WeaponId,
+    /// The sight on the weapon in hand.
+    pub sight: SightId,
     pub health: i32,
     pub armor: i32,
     pub alive: bool,

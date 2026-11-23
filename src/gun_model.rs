@@ -6,17 +6,18 @@
 //! loaded it is measured, turned barrel-forward, centred on the holder and
 //! scaled to its weapon's `size` length, so a new model drops in as it is.
 //!
-//! A gun can carry a sight (`Model::sight`), another glTF file in metres. It is
-//! mounted on the gun's `SightMount` node, whose position and scale (sight
-//! metres to gun-file units) are set in the gun's file. The gun's `IronSight...`
-//! nodes are hidden under it, and aiming lines up the sight's `AimPoint` node
+//! A gun with a `SightMount` node can carry any of `SIGHTS`, each another glTF
+//! file in metres. Every sight is mounted on every such gun, and the holder's
+//! `sight` picks the one shown. The mount's position and scale (sight metres
+//! to gun-file units) are set in the gun's file. The gun's `IronSight...` nodes
+//! are hidden under a sight, and aiming lines up the sight's `AimPoint` node
 //! with the crosshair.
 
 use std::f32::consts::PI;
 
 use bevy::{camera::primitives::Aabb, light::NotShadowCaster, prelude::*};
 
-use crate::weapons::{WEAPONS, WeaponId, weapon};
+use crate::weapons::{IRON_SIGHTS, SIGHTS, SightId, WEAPONS, WeaponId, sight_on, weapon};
 
 pub struct GunModelPlugin;
 
@@ -53,6 +54,8 @@ pub enum GunModelSystems {
 #[derive(Component)]
 pub struct GunHolder {
     pub weapon: WeaponId,
+    /// The sight on it, if the weapon takes one.
+    pub sight: SightId,
     /// Off for the first-person gun, whose shadow would float in front of you.
     pub shadows: bool,
 }
@@ -66,8 +69,15 @@ pub struct FittedModels([Option<Fitted>; WEAPONS.len()]);
 pub struct Fitted {
     /// Width, height and length in metres, centred on the holder.
     pub size: Vec3,
-    /// Where the sight's dot is, relative to the holder, once its sight is in.
-    pub aim_point: Option<Vec3>,
+    /// Where each sight's dot is, relative to the holder, once that sight is in.
+    aim_points: [Option<Vec3>; SIGHTS.len()],
+}
+
+impl Fitted {
+    /// Where the dot of this sight is, once it is mounted. `None` for the iron sights.
+    pub fn aim_point(&self, sight: SightId) -> Option<Vec3> {
+        self.aim_points.get(sight as usize).copied().flatten()
+    }
 }
 
 impl FittedModels {
@@ -76,12 +86,13 @@ impl FittedModels {
     }
 }
 
-/// The loaded scenes of each weapon's model and sight, by weapon id.
+/// The loaded scenes of each weapon's model (by weapon id) and each sight's
+/// (by sight id; `None` for the iron sights).
 #[derive(Resource)]
-struct ModelScenes(Vec<Option<GunScenes>>);
-
-/// A gun's scene, and its sight's if it has one.
-type GunScenes = (Handle<WorldAsset>, Option<Handle<WorldAsset>>);
+struct ModelScenes {
+    guns: Vec<Option<Handle<WorldAsset>>>,
+    sights: Vec<Option<Handle<WorldAsset>>>,
+}
 
 /// One weapon's model under a holder. Hidden until it is fitted.
 #[derive(Component)]
@@ -89,14 +100,11 @@ struct GunModel {
     weapon: WeaponId,
     fitted: bool,
     shadows: bool,
-    sight: SightState,
-}
-
-enum SightState {
-    None,
-    /// Mounted; this is the sight's scene entity, measured once it has loaded.
-    Loading(Entity),
-    Measured,
+    /// The sights mounted on it, by sight id: each one's scene entity, and
+    /// whether it has been measured yet. Empty for guns without a mount.
+    sights: Vec<Option<(Entity, bool)>>,
+    /// Its iron sight nodes, hidden while another sight is shown.
+    irons: Vec<Entity>,
 }
 
 const SIGHT_MOUNT: &str = "SightMount";
@@ -105,11 +113,10 @@ const IRON_SIGHT_PREFIX: &str = "IronSight";
 
 fn load_models(mut commands: Commands, asset_server: Res<AssetServer>) {
     let load = |path: &'static str| asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
-    let scenes = WEAPONS
-        .iter()
-        .map(|w| w.model.as_ref().map(|model| (load(model.path), model.sight.map(load))))
-        .collect();
-    commands.insert_resource(ModelScenes(scenes));
+    commands.insert_resource(ModelScenes {
+        guns: WEAPONS.iter().map(|w| w.model.as_ref().map(|model| load(model.path))).collect(),
+        sights: SIGHTS.iter().map(|s| s.path.map(load)).collect(),
+    });
 }
 
 fn attach_models(
@@ -118,8 +125,8 @@ fn attach_models(
     holders: Query<(Entity, &GunHolder), Added<GunHolder>>,
 ) {
     for (holder, settings) in &holders {
-        for (id, scenes) in scenes.0.iter().enumerate() {
-            let Some((scene, _)) = scenes else {
+        for (id, scene) in scenes.guns.iter().enumerate() {
+            let Some(scene) = scene else {
                 continue;
             };
             let model = commands
@@ -128,7 +135,8 @@ fn attach_models(
                         weapon: id as WeaponId,
                         fitted: false,
                         shadows: settings.shadows,
-                        sight: SightState::None,
+                        sights: Vec::new(),
+                        irons: Vec::new(),
                     },
                     Transform::default(),
                     Visibility::Hidden,
@@ -143,7 +151,7 @@ fn attach_models(
 }
 
 /// Measures each newly loaded model, fits it in place of the box gun, and
-/// mounts its sight.
+/// mounts the sights.
 fn fit_models(
     mut commands: Commands,
     scenes: Res<ModelScenes>,
@@ -212,7 +220,7 @@ fn fit_models(
         model.fitted = true;
         fitted.0[model.weapon as usize] = Some(Fitted {
             size: size * scale,
-            aim_point: None,
+            aim_points: [None; SIGHTS.len()],
         });
         if !model.shadows {
             for part in parts {
@@ -220,27 +228,38 @@ fn fit_models(
             }
         }
 
-        let Some((_, Some(sight))) = &scenes.0[model.weapon as usize] else {
+        if !spec.sight_mount {
             continue;
-        };
+        }
         let named = |prefix: &'static str| {
             descendants
                 .iter_descendants(scene)
                 .filter(move |&e| names.get(e).is_ok_and(|name| name.as_str().starts_with(prefix)))
         };
         let Some(mount) = named(SIGHT_MOUNT).next() else {
-            warn!("{} has a sight but no {SIGHT_MOUNT} node", spec.path);
+            warn!("{} has no {SIGHT_MOUNT} node", spec.path);
             continue;
         };
-        let sight = commands.spawn((WorldAssetRoot(sight.clone()), ChildOf(mount))).id();
-        model.sight = SightState::Loading(sight);
-        for iron in named(IRON_SIGHT_PREFIX) {
-            commands.entity(iron).insert(Visibility::Hidden);
+        model.sights = scenes
+            .sights
+            .iter()
+            .map(|sight| {
+                let sight = sight.as_ref()?;
+                let entity = commands
+                    .spawn((WorldAssetRoot(sight.clone()), Visibility::Hidden, ChildOf(mount)))
+                    .id();
+                Some((entity, false))
+            })
+            .collect();
+        model.irons = named(IRON_SIGHT_PREFIX).collect();
+        // So that `show_models` can hide them.
+        for &iron in &model.irons {
+            commands.entity(iron).insert(Visibility::Inherited);
         }
     }
 }
 
-/// Finds where a newly loaded sight's dot ended up, for aiming.
+/// Finds where each newly loaded sight's dot ended up, for aiming.
 fn measure_sights(
     mut commands: Commands,
     mut fitted: ResMut<FittedModels>,
@@ -251,55 +270,80 @@ fn measure_sights(
     names: Query<&Name>,
 ) {
     for (mut model, transform, children) in &mut models {
-        let SightState::Loading(sight) = model.sight else {
-            continue;
-        };
-        let mut parts = Vec::new();
-        let mut aim = None;
-        for entity in descendants.iter_descendants(sight) {
-            if let Ok(has_bounds) = meshes.get(entity) {
-                parts.push((entity, has_bounds));
+        let (id, shadows) = (model.weapon, model.shadows);
+        for (sight_id, slot) in model.sights.iter_mut().enumerate() {
+            let Some((sight, measured)) = slot else {
+                continue;
+            };
+            if *measured {
+                continue;
             }
-            if names.get(entity).is_ok_and(|name| name.as_str() == AIM_POINT) {
-                aim = Some(entity);
+            let mut parts = Vec::new();
+            let mut aim = None;
+            for entity in descendants.iter_descendants(*sight) {
+                if let Ok(has_bounds) = meshes.get(entity) {
+                    parts.push((entity, has_bounds));
+                }
+                if names.get(entity).is_ok_and(|name| name.as_str() == AIM_POINT) {
+                    aim = Some(entity);
+                }
             }
-        }
-        // Bounds appear once transforms have caught up with the new parts.
-        if parts.is_empty() || parts.iter().any(|&(_, has_bounds)| !has_bounds) {
-            continue;
-        }
-        model.sight = SightState::Measured;
-        if !model.shadows {
-            for &(part, _) in &parts {
-                commands.entity(part).insert(NotShadowCaster);
+            // Bounds appear once transforms have caught up with the new parts.
+            if parts.is_empty() || parts.iter().any(|&(_, has_bounds)| !has_bounds) {
+                continue;
             }
-        }
-        let (Some(aim), Some(&scene)) = (aim, children.first()) else {
-            warn!("the sight on weapon {} has no {AIM_POINT} node", model.weapon);
-            continue;
-        };
-        let (Ok(aim), Ok(scene)) = (globals.get(aim), globals.get(scene)) else {
-            continue;
-        };
-        // From the gun's file space to the holder, through the fit.
-        let in_scene = scene.affine().inverse().transform_point3(aim.translation());
-        if let Some(entry) = &mut fitted.0[model.weapon as usize] {
-            entry.aim_point = Some(transform.transform_point(in_scene));
+            *measured = true;
+            if !shadows {
+                for &(part, _) in &parts {
+                    commands.entity(part).insert(NotShadowCaster);
+                }
+            }
+            let (Some(aim), Some(&scene)) = (aim, children.first()) else {
+                warn!("sight {sight_id} has no {AIM_POINT} node");
+                continue;
+            };
+            let (Ok(aim), Ok(scene)) = (globals.get(aim), globals.get(scene)) else {
+                continue;
+            };
+            // From the gun's file space to the holder, through the fit.
+            let in_scene = scene.affine().inverse().transform_point3(aim.translation());
+            if let Some(entry) = &mut fitted.0[id as usize] {
+                entry.aim_points[sight_id] = Some(transform.transform_point(in_scene));
+            }
         }
     }
 }
 
+/// Shows the model of the weapon in each holder's hands, with the holder's
+/// sight on it (or its iron sights).
 fn show_models(
     holders: Query<&GunHolder>,
-    mut models: Query<(&GunModel, &ChildOf, &mut Visibility)>,
+    models: Query<(Entity, &GunModel, &ChildOf)>,
+    mut visibilities: Query<&mut Visibility>,
 ) {
-    for (model, parent, mut visibility) in &mut models {
-        let shown = model.fitted && holders.get(parent.parent()).is_ok_and(|h| h.weapon == model.weapon);
-        let wanted = if shown {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        visibility.set_if_neq(wanted);
+    let mut set = |entity: Entity, shown: bool| {
+        if let Ok(mut visibility) = visibilities.get_mut(entity) {
+            visibility.set_if_neq(if shown {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+        }
+    };
+    for (entity, model, parent) in &models {
+        let holder = holders.get(parent.parent()).ok();
+        set(entity, model.fitted && holder.is_some_and(|h| h.weapon == model.weapon));
+        let wanted = holder.map_or(IRON_SIGHTS, |h| sight_on(model.weapon, h.sight));
+        let mut mounted = false;
+        for (sight_id, slot) in model.sights.iter().enumerate() {
+            if let Some((sight, _)) = slot {
+                let on = sight_id == wanted as usize;
+                mounted |= on;
+                set(*sight, on);
+            }
+        }
+        for &iron in &model.irons {
+            set(iron, !mounted);
+        }
     }
 }

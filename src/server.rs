@@ -20,7 +20,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 use crate::{
     map::{self, Map},
     protocol::*,
-    weapons::{self, DRAW_TIME, GUN_COUNT, KNIFE, KNIFE_RANGE, WEAPONS, WeaponId, hit_damage, weapon},
+    weapons::{self, DRAW_TIME, GUN_COUNT, IRON_SIGHTS, KNIFE, KNIFE_RANGE, SightId, WEAPONS, WeaponId, hit_damage, weapon},
 };
 
 const TICK: Duration = Duration::from_micros(1_000_000 / 60);
@@ -162,8 +162,9 @@ struct Player {
     pitch: f32,
     /// `FLAG_*` bits reported by the client.
     flags: u8,
-    /// The weapon in hand, as reported by the client.
+    /// The weapon in hand, and the sight on it, as reported by the client.
     weapon: WeaponId,
+    sight: SightId,
     respawn_in: f32,
     spawn_seq: u32,
     /// Seconds of firing this player has saved up. Every shot costs most of
@@ -351,6 +352,7 @@ impl Server {
                 player.pitch = state.pitch;
                 player.flags = state.flags;
                 player.weapon = state.weapon;
+                player.sight = state.sight;
             }
         }
 
@@ -436,6 +438,7 @@ impl Server {
                         pitch: p.pitch,
                         flags: p.flags,
                         weapon: p.weapon,
+                        sight: p.sight,
                         health: p.health,
                         armor: p.armor,
                         alive: p.alive,
@@ -1196,6 +1199,7 @@ impl Server {
             pitch: 0.0,
             flags: 0,
             weapon: 0,
+            sight: IRON_SIGHTS,
             respawn_in: 0.0,
             spawn_seq: 0,
             fire_credit: 0.0,

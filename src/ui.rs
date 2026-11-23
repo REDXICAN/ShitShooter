@@ -24,7 +24,7 @@ use crate::{
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
-    weapons::{KNIFE, weapon},
+    weapons::{KNIFE, sight, takes_sights, weapon},
     world::{GameMap, player_color},
 };
 
@@ -800,14 +800,41 @@ fn loadout_button(slot: usize) -> impl Bundle {
     )
 }
 
-fn update_loadout_buttons(settings: Res<Settings>, mut texts: Query<(&LoadoutText, &mut Text)>) {
-    for (slot, mut text) in &mut texts {
-        let (title, gun) = if slot.0 == 0 {
-            ("Primary", settings.primary)
-        } else {
-            ("Secondary", settings.secondary)
-        };
-        set_text(&mut text, format!("{title}: {}", weapon(gun).name));
+/// The text of a button that shows, and changes, the sight on the gun in a slot.
+#[derive(Component)]
+struct SightText(usize);
+
+/// A button that puts the next sight on the gun in a slot.
+fn sight_button(slot: usize) -> impl Bundle {
+    (
+        button_box(ButtonKind::Normal, false),
+        children![(label("", 16.0, TEXT), Pickable::IGNORE, SightText(slot))],
+        observe(move |_: On<Activate>, mut settings: ResMut<Settings>| {
+            settings.cycle_sight(slot);
+            settings.save();
+        }),
+    )
+}
+
+fn update_loadout_buttons(
+    settings: Res<Settings>,
+    mut guns: Query<(&LoadoutText, &mut Text), Without<SightText>>,
+    mut sights: Query<(&SightText, &mut Text), Without<LoadoutText>>,
+) {
+    for (slot, mut text) in &mut guns {
+        let title = if slot.0 == 0 { "Primary" } else { "Secondary" };
+        set_text(&mut text, format!("{title}: {}", weapon(settings.gun(slot.0)).name));
+    }
+    for (slot, mut text) in &mut sights {
+        let gun = settings.gun(slot.0);
+        set_text(
+            &mut text,
+            if takes_sights(gun) {
+                format!("Sight: {}", sight(settings.sight_for(gun)).name)
+            } else {
+                "No sight mount".to_string()
+            },
+        );
     }
 }
 
@@ -933,7 +960,9 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                                 children![
                                     section("Loadout"),
                                     loadout_button(0),
+                                    sight_button(0),
                                     loadout_button(1),
+                                    sight_button(1),
                                     (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
                                 ],
                             ),
@@ -1696,7 +1725,9 @@ fn spawn_hud(mut commands: Commands) {
                                     children![
                                         section("Loadout"),
                                         loadout_button(0),
+                                        sight_button(0),
                                         loadout_button(1),
+                                        sight_button(1),
                                         label("Handed out the next time you spawn.", 14.0, DIM),
                                     ],
                                 ),
@@ -2031,7 +2062,9 @@ fn update_crosshair(
     fitted: Res<FittedModels>,
     mut crosshair: Single<&mut Visibility, With<Crosshair>>,
 ) {
-    let sight = fitted.get(player.weapon_id()).is_some_and(|f| f.aim_point.is_some());
+    let sight = fitted
+        .get(player.weapon_id())
+        .is_some_and(|f| f.aim_point(player.sight_id()).is_some());
     crosshair.set_if_neq(if sight && player.aim > 0.9 {
         Visibility::Hidden
     } else {

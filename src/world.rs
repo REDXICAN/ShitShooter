@@ -184,7 +184,11 @@ fn setup(
         Transform::from_xyz(0.0, 30.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
         children![(
             ViewModel,
-            crate::gun_model::GunHolder { weapon: crate::weapons::RIFLE, shadows: false },
+            crate::gun_model::GunHolder {
+                weapon: crate::weapons::RIFLE,
+                sight: crate::weapons::IRON_SIGHTS,
+                shadows: false,
+            },
             Transform::from_translation(crate::player::VIEW_MODEL_REST),
             Visibility::Hidden,
             children![

@@ -19,7 +19,7 @@ use crate::{
     net::{Connection, NetMsg, Session},
     protocol::*,
     settings::{Action, ActionInput, Settings, SettingsMenu},
-    weapons::{DRAW_TIME, KNIFE, PISTOL, RIFLE, Weapon, WeaponId, weapon},
+    weapons::{DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, weapon},
     world::{GameMap, MainCamera, ViewModel, ViewModelPart},
 };
 
@@ -72,15 +72,18 @@ pub const KNIFE_SLOT: usize = 2;
 #[derive(Clone, Copy)]
 pub struct GunSlot {
     pub weapon: WeaponId,
+    /// The sight on it (see `weapons::sight_on`).
+    pub sight: SightId,
     pub ammo: u32,
     /// Seconds until it can fire again.
     pub cooldown: f32,
 }
 
 impl GunSlot {
-    fn full(weapon_id: WeaponId) -> GunSlot {
+    fn full(weapon_id: WeaponId, sight: SightId) -> GunSlot {
         GunSlot {
             weapon: weapon_id,
+            sight,
             ammo: weapon(weapon_id).magazine,
             cooldown: 0.0,
         }
@@ -210,7 +213,7 @@ impl Default for LocalPlayer {
             health: 0,
             armor: 0,
             spawn_seq: 0,
-            guns: [GunSlot::full(RIFLE), GunSlot::full(PISTOL)],
+            guns: [GunSlot::full(RIFLE, IRON_SIGHTS), GunSlot::full(PISTOL, IRON_SIGHTS)],
             slot: 0,
             draw: 0.0,
             knife_cooldown: 0.0,
@@ -292,6 +295,11 @@ impl LocalPlayer {
         self.guns.get(self.slot).map_or(KNIFE, |gun| gun.weapon)
     }
 
+    /// The sight on the weapon in hand.
+    pub fn sight_id(&self) -> SightId {
+        self.guns.get(self.slot).map_or(IRON_SIGHTS, |gun| gun.sight)
+    }
+
     pub fn weapon(&self) -> &'static Weapon {
         weapon(self.weapon_id())
     }
@@ -349,7 +357,7 @@ fn handle_net(
                     armor: START_ARMOR,
                     spawn_seq: *spawn_seq,
                     // Every life starts with the loadout picked in the menus.
-                    guns: [GunSlot::full(settings.primary), GunSlot::full(settings.secondary)],
+                    guns: [settings.primary, settings.secondary].map(|gun| GunSlot::full(gun, settings.sight_for(gun))),
                     last_grenade: player.last_grenade,
                     ..default()
                 };
@@ -698,14 +706,16 @@ fn follow_camera(
     // Aimed: centred. A sight's dot goes on the crosshair, close to the eye like
     // a real one; otherwise a model's iron sights (its highest point) line up
     // under it, or the box gun's sight sits just below it.
-    let aimed = match model {
-        Some(Fitted { aim_point: Some(dot), .. }) => Vec3::new(-dot.x, -dot.y, -SIGHT_EYE_RELIEF - dot.z),
-        Some(Fitted { size, .. }) => Vec3::new(0.0, -(size.y / 2.0 + 0.003), -0.31 - length / 2.0),
-        None => Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0),
+    let dot = model.and_then(|fitted| fitted.aim_point(player.sight_id()));
+    let aimed = match (dot, model) {
+        (Some(dot), _) => Vec3::new(-dot.x, -dot.y, -SIGHT_EYE_RELIEF - dot.z),
+        (None, Some(Fitted { size, .. })) => Vec3::new(0.0, -(size.y / 2.0 + 0.003), -0.31 - length / 2.0),
+        (None, None) => Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0),
     };
 
     let (mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
     holder.weapon = player.weapon_id();
+    holder.sight = player.sight_id();
     gun.translation = VIEW_MODEL_REST.lerp(aimed, player.aim)
         + kick
         + Vec3::new(0.0, -0.06, 0.0) * tipped
@@ -808,6 +818,7 @@ fn send_state(player: Res<LocalPlayer>, mut connection: ResMut<Connection>) {
             pitch: player.pitch,
             flags: (player.crouching as u8 * FLAG_CROUCH) | (player.reloading() as u8 * FLAG_RELOAD),
             weapon: player.weapon_id(),
+            sight: player.sight_id(),
             spawn_seq: player.spawn_seq,
         });
     }

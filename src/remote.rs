@@ -11,7 +11,7 @@ use crate::{
     player::LocalPlayer,
     gun_model::{FittedModels, GunHolder, GunModelSystems},
     protocol::*,
-    weapons::{WeaponId, weapon},
+    weapons::{SightId, WeaponId, weapon},
     world::SharedAssets,
 };
 
@@ -59,8 +59,9 @@ pub struct RemotePlayer {
     /// Their collision box is the short one (crouching or sliding).
     pub crouching: bool,
     reloading: bool,
-    /// The weapon in their hands.
+    /// The weapon in their hands, and the sight on it.
     weapon: WeaponId,
+    sight: SightId,
     pitch: f32,
     /// 0 = standing, 1 = crouched; eased so the model does not snap.
     crouch_pose: f32,
@@ -146,6 +147,7 @@ fn apply_snapshots(
             remote.crouching = snap.flags & FLAG_CROUCH != 0;
             remote.reloading = snap.flags & FLAG_RELOAD != 0;
             remote.weapon = snap.weapon;
+            remote.sight = snap.sight;
             let wanted = if snap.alive {
                 Visibility::Inherited
             } else {
@@ -168,6 +170,7 @@ fn apply_snapshots(
                         crouching: snap.flags & FLAG_CROUCH != 0,
                         reloading: snap.flags & FLAG_RELOAD != 0,
                         weapon: snap.weapon,
+                        sight: snap.sight,
                         pitch: snap.pitch,
                         crouch_pose: 0.0,
                         reload_pose: 0.0,
@@ -206,7 +209,11 @@ fn apply_snapshots(
                                 ),
                                 (
                                     Gun,
-                                    GunHolder { weapon: snap.weapon, shadows: true },
+                                    GunHolder {
+                                        weapon: snap.weapon,
+                                        sight: snap.sight,
+                                        shadows: true,
+                                    },
                                     Transform::from_translation(GUN_REST)
                                         .with_scale(Vec3::splat(REMOTE_GUN_SCALE)),
                                     Visibility::default(),
@@ -317,6 +324,7 @@ fn interpolate(
                 for part in parts.iter() {
                     if let Ok((mut gun, mut holder)) = guns.get_mut(part) {
                         holder.weapon = remote.weapon;
+                        holder.sight = remote.sight;
                         gun.translation = GUN_REST + Vec3::new(0.0, -0.12, 0.1) * remote.reload_pose;
                         gun.rotation = Quat::from_rotation_x(-0.9 * remote.reload_pose);
                     }
