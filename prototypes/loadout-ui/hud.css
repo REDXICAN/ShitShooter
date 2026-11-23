@@ -1,0 +1,495 @@
+.screen-hud {
+  cursor: crosshair;
+}
+
+.crosshair {
+  width: 4px;
+  height: 4px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+.hud-anchor {
+  position: absolute;
+  right: 20px;
+  bottom: 18px;
+  cursor: default;
+}
+
+.hud {
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  color: var(--text);
+  text-shadow: 1.5px 1.5px 0 rgba(0, 0, 0, 0.8);
+  background: rgba(8, 10, 18, 0.6);
+  border: 1px solid var(--hud-edge);
+  border-radius: 8px;
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hud-end {
+  justify-content: flex-end;
+}
+
+.hud-between {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hud-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font: inherit;
+  color: inherit;
+  text-shadow: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.hud-chip.is-on {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 158, 51, 0.7);
+}
+
+.hud-key {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.hud-key.is-on,
+.is-accent {
+  color: var(--accent);
+}
+
+.hud-name {
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.is-on .hud-name,
+.hud-gname {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.hud-pips {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.hud-pips i {
+  width: 14px;
+  height: 8px;
+  background: var(--text);
+  border-radius: 4px;
+}
+
+.hud-pips i.is-dim {
+  background: var(--track);
+}
+
+.hud-title {
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.hud-title.is-accent {
+  color: var(--accent);
+}
+
+.hud-ammo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hud-ammo b {
+  font-size: 40px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.hud-ammo b.is-accent {
+  color: var(--accent);
+}
+
+.hud-ammo i {
+  font-size: 20px;
+  font-style: normal;
+  color: var(--dim);
+}
+
+.hud-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  background: var(--track);
+  border-radius: 3px;
+}
+
+.hud-track span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--text);
+  border-radius: 5px;
+}
+
+.hud-track span.is-accent {
+  background: var(--accent);
+}
+
+.hud img,
+.hud .lt-img-wait,
+.hud-strip img {
+  object-fit: contain;
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.7)) drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
+}
+
+.hud-gicons {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.hud-gicons .hud-key {
+  margin-right: 2px;
+}
+
+.hud-gicon {
+  position: relative;
+  width: 20px;
+  height: 22px;
+}
+
+.hud .hud-gicon img,
+.hud .hud-gicon .lt-img-wait {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hud .hud-gicon-base {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+
+.hud .hud-gicon-fill {
+  clip-path: inset(var(--empty) 0 0 0);
+}
+
+.hud-gcount {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 16px;
+}
+
+.hud-gcount.is-dim {
+  opacity: 0.4;
+}
+
+.hud-gcount-img {
+  width: 20px;
+  height: 22px;
+  object-fit: cover !important;
+}
+
+.hud-strip {
+  position: absolute;
+  right: 20px;
+  bottom: var(--strip-bottom, 160px);
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  color: var(--text);
+  text-shadow: 1.5px 1.5px 0 rgba(0, 0, 0, 0.8);
+  background: rgba(8, 10, 18, 0.6);
+  border: 1px solid var(--hud-edge);
+  border-radius: 8px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hud-strip.is-shown {
+  animation: hud-strip 1.6s ease forwards;
+}
+
+@keyframes hud-strip {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.hud-stripimg {
+  width: 54px;
+  height: 22px;
+  opacity: 0.7;
+}
+
+.is-on .hud-stripimg {
+  opacity: 1;
+}
+
+.hud-type-compact {
+  min-width: 0;
+  gap: 5px;
+  padding: 7px 12px;
+}
+
+.hud-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-sep {
+  width: 1px;
+  height: 26px;
+  background: var(--hud-edge);
+}
+
+.hud-cimg {
+  width: 82px;
+  height: 34px;
+}
+
+.hud-right {
+  min-width: 92px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hud-type-compact .hud-ammo b {
+  font-size: 32px;
+}
+
+.hud-type-compact .hud-ammo i {
+  font-size: 16px;
+}
+
+.hud-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hud-hero-img {
+  width: 168px;
+  height: 70px;
+}
+
+.hud-hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.hud-type-rounds {
+  min-width: 250px;
+}
+
+.hud-rimg {
+  width: 70px;
+  height: 29px;
+  margin-right: 6px;
+}
+
+.hud-type-rounds .hud-ammo b {
+  font-size: 30px;
+}
+
+.hud-rounds {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+}
+
+.hud-rounds i {
+  flex: 1;
+  max-width: 9px;
+  background: var(--text);
+  border-radius: 1px;
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+.hud-rounds.is-accent i {
+  background: var(--accent);
+}
+
+.hud-rounds i.is-spent {
+  background: var(--track);
+}
+
+.hud-type-bare {
+  min-width: 0;
+  padding: 0;
+  gap: 4px;
+  background: none;
+  border: none;
+}
+
+.hud-type-bare .hud-title {
+  margin-left: 8px;
+}
+
+.hud-type-bare .hud-ammo b {
+  font-size: 44px;
+}
+
+.hud-type-bare .hud-track {
+  width: 200px;
+  height: 3px;
+  align-self: flex-end;
+}
+
+.hud {
+  transition: opacity 0.4s ease;
+}
+
+.hud.is-idle {
+  opacity: 0.4;
+}
+
+.hud-type-bare.is-idle {
+  opacity: 0.3;
+}
+
+.hud-ammo b {
+  display: inline-block;
+}
+
+.hud-ammo b.is-full {
+  opacity: 0.8;
+}
+
+.hud-sub {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.hud-rounds i.is-chunk {
+  margin-left: 3px;
+}
+
+.hud-rounds.is-few {
+  height: 14px;
+  gap: 4px;
+}
+
+.hud-rounds.is-few i {
+  max-width: 16px;
+  border-radius: 3px 3px 2px 2px;
+}
+
+.hud-type-bare {
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9), 1.5px 1.5px 0 rgba(0, 0, 0, 0.8);
+}
+
+.hud-glabel {
+  margin-right: 4px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+}
+
+.hud-gcount .hud-glabel {
+  margin-right: 2px;
+}
+
+.hud-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+}
+
+.hud-ring svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.hud-ring circle {
+  fill: none;
+  stroke-width: 3;
+}
+
+.hud-ring-track {
+  stroke: var(--track);
+}
+
+.hud-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+}
+
+.hud-ring b {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.hud-refill {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  width: 104px;
+  height: 18px;
+}
+
+.hud-refill i {
+  flex: 1;
+  height: 100%;
+  max-width: 6px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.hud-refill.is-few {
+  gap: 4px;
+}
+
+.hud-refill.is-few i {
+  max-width: 14px;
+  border-radius: 3px 3px 2px 2px;
+}
+
+.hud-refill i.is-spent {
+  background: var(--track);
+}
+
+.hud .hud-gunimg {
+  transform-origin: 70% 60%;
+}
+
+.hud.is-tilting .hud-gunimg {
+  transform: translateY(var(--drop)) rotate(var(--tilt)) scale(var(--shrink));
+}

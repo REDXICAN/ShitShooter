@@ -92,6 +92,11 @@ body {
   color: #61db80;
 }
 
+.bar-hint {
+  margin-left: 6px;
+  color: #8b93a6;
+}
+
 .bar-fit.is-bad {
   color: #ff594d;
 }

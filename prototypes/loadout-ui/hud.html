@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HUD Ideas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="shell.css">
+<link rel="stylesheet" href="hud.css">
+</head>
+<body>
+<header class="bar">
+  <strong class="bar-title">ShitShooter · HUD weapon panel</strong>
+  <div class="bar-group" data-group="hud"><span>Type</span><button data-value="now">Now</button><button data-value="compact">1 Compact</button><button data-value="big">2 Big gun</button><button data-value="rounds">3 Rounds</button><button data-value="bare">4 Frameless</button></div>
+  <div class="bar-group" data-group="reload"><span>Reload</span><button data-value="auto">Type default</button><button data-value="bar">Bar</button><button data-value="ring">Ring</button><button data-value="count">Count up</button><button data-value="refill">Refill</button><button data-value="tilt">Tilt</button></div>
+  <div class="bar-group" data-group="size"><span>Window</span><button data-value="1280x720">1280×720</button><button data-value="1920x1080">1920×1080</button></div>
+  <span class="bar-hint">Hold mouse to fire · 1 2 3 switch · R reloads · G throws</span>
+  <span class="bar-fit" id="fit"></span>
+</header>
+<main class="viewport" id="viewport">
+  <div class="stage" id="stage">
+    <div class="scene"><i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i><i class="s5"></i></div>
+    <section class="screen screen-hud" id="screen-hud">
+      <div class="crosshair"></div>
+      <div class="hud-anchor"><div id="hud-weapons"></div></div>
+    </section>
+  </div>
+</main>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script src="data.js"></script>
+<script src="loadout.js"></script>
+<script src="hud.js"></script>
+<script src="hud-shell.js"></script>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>

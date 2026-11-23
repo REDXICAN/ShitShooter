@@ -19,6 +19,7 @@ function loadScene(path) {
 
 function modelSpec(kind, id) {
   if (kind === "grenade") return { path: GRENADES[id].model, turn: 0 };
+  if (kind === "knife") return { path: KNIFE.model, turn: KNIFE.barrelPlusZ ? Math.PI / 2 : -Math.PI / 2 };
   return { path: GUNS[id].model, turn: GUNS[id].barrelPlusZ ? Math.PI / 2 : -Math.PI / 2 };
 }
 
