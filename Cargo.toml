@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.20.1", features = ["wav"] }
+bevy = { version = "0.20.1", features = ["wav", "system_clipboard"] }
 postcard = { version = "1.2.0", features = ["use-std"] }
 renet = { version = "2.0.1", default-features = false }
 renet_netcode = { version = "2.0.1", default-features = false }

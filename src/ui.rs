@@ -3,12 +3,12 @@
 use bevy::{
     clipboard::Clipboard,
     input_focus::{
-        InputFocus,
+        FocusCause, InputFocus,
         tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
     },
     picking::hover::Hovered,
     prelude::*,
-    text::{EditableText, TextCursorStyle},
+    text::{EditableText, TextCursorStyle, TextEdit},
     ui::Pressed,
     ui_widgets::{Activate, Button, TextInput, observe},
 };
@@ -422,7 +422,17 @@ fn spawn_menu(mut commands: Commands, prefs: Res<MenuPrefs>) {
                                     menu_card(
                                         "Join",
                                         "Connect to a friend's lobby.",
-                                        field("Address", Field::Address, &prefs.address, 64, 3),
+                                        (
+                                            Node {
+                                                align_items: AlignItems::FlexEnd,
+                                                column_gap: px(8),
+                                                ..default()
+                                            },
+                                            children![
+                                                field("Address", Field::Address, &prefs.address, ADDRESS_CHARS, 3),
+                                                (small_button("Paste"), observe(on_paste_address)),
+                                            ],
+                                        ),
                                         (primary_button("Join lobby"), observe(on_join)),
                                     ),
                                 ],
@@ -547,6 +557,34 @@ fn on_join(
 ) {
     read_fields(&fields, &mut prefs, &mut settings);
     start_join(&mut commands, &prefs, &mut status, &mut next_state);
+}
+
+/// Longest address the Address field takes.
+const ADDRESS_CHARS: usize = 64;
+
+/// Replaces what is in the Address field with the first line of the clipboard.
+fn on_paste_address(
+    _: On<Activate>,
+    mut clipboard: ResMut<Clipboard>,
+    mut fields: Query<(Entity, &Field, &mut EditableText)>,
+    mut focus: ResMut<InputFocus>,
+    mut status: ResMut<MenuStatus>,
+) {
+    let pasted = match clipboard.fetch_text().poll_result() {
+        Some(Ok(text)) => text.lines().next().unwrap_or("").trim().chars().take(ADDRESS_CHARS).collect::<String>(),
+        _ => String::new(),
+    };
+    if pasted.is_empty() {
+        status.0 = "There is no text on the clipboard to paste.".to_string();
+        return;
+    }
+    let Some((entity, _, mut text)) = fields.iter_mut().find(|(_, field, _)| **field == Field::Address) else {
+        return;
+    };
+    text.clear();
+    text.queue_edit(TextEdit::Insert(pasted.into()));
+    focus.set(entity, FocusCause::Navigated);
+    status.0.clear();
 }
 
 fn on_quit(_: On<Activate>, mut exit: MessageWriter<AppExit>) {
