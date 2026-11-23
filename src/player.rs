@@ -745,13 +745,18 @@ fn follow_camera(
     let rear = length / 2.0;
     for (part, mut transform, mut visibility) in &mut parts {
         let (at, size, shown) = match part {
-            ViewModelPart::Body => (Vec3::ZERO, Vec3::new(width, height, length), true),
-            // The knife's handle sits behind the blade.
-            ViewModelPart::Grip if knife => (
-                Vec3::new(0.0, 0.0, rear + 0.05),
-                Vec3::new(0.026, 0.03, 0.1),
+            // The knife is a blade (the front two thirds) and its handle.
+            ViewModelPart::Body if knife => (
+                Vec3::new(0.0, 0.0, -length / 6.0),
+                Vec3::new(width, height, length * 2.0 / 3.0),
                 true,
             ),
+            ViewModelPart::Grip if knife => (
+                Vec3::new(0.0, 0.0, length / 3.0),
+                Vec3::new(0.026, 0.03, length / 3.0),
+                true,
+            ),
+            ViewModelPart::Body => (Vec3::ZERO, Vec3::new(width, height, length), true),
             ViewModelPart::Grip => (
                 Vec3::new(0.0, -height / 2.0 - 0.035, rear - 0.04),
                 Vec3::new(width * 0.8, 0.08, 0.04),

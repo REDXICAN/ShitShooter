@@ -201,7 +201,11 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_up: 0.075,
         kick_side: 0.018,
         headshot: 1.5,
-        model: None,
+        model: Some(Model {
+            path: "models/Shotgun.glb",
+            barrel_plus_z: true,
+            sights: &[],
+        }),
     },
     Weapon {
         name: "Sniper",
@@ -267,12 +271,17 @@ pub const WEAPONS: [Weapon; 6] = [
         aim_spread: 0.0,
         zoom: 1.0,
         mobility: 1.12,
-        size: [0.012, 0.04, 0.2],
+        // Blade and handle together.
+        size: [0.012, 0.04, 0.3],
         pitch: 1.0,
         kick_up: 0.0,
         kick_side: 0.0,
         headshot: 1.0,
-        model: None,
+        model: Some(Model {
+            path: "models/Knife.glb",
+            barrel_plus_z: true,
+            sights: &[],
+        }),
     },
 ];
 
