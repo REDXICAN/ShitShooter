@@ -63,8 +63,6 @@ const KICK_RECOVERY: f32 = 9.0;
 /// Field of view of the menu camera, in radians.
 pub const BASE_FOV: f32 = 1.3;
 pub const VIEW_MODEL_REST: Vec3 = Vec3::new(0.2, -0.17, -0.42);
-/// How far in front of the eye a sight's dot is held when aiming.
-const SIGHT_EYE_RELIEF: f32 = 0.08;
 /// `LocalPlayer::slot` when the knife is out (0 and 1 are the gun slots).
 pub const KNIFE_SLOT: usize = 2;
 
@@ -723,7 +721,7 @@ fn follow_camera(
     // under it, or the box gun's sight sits just below it.
     let dot = model.and_then(|fitted| fitted.aim_point(player.sight_id()));
     let aimed = match (dot, model) {
-        (Some(dot), _) => Vec3::new(-dot.x, -dot.y, -SIGHT_EYE_RELIEF - dot.z),
+        (Some(dot), _) => Vec3::new(-dot.x, -dot.y, -stats.sight_relief - dot.z),
         (None, Some(Fitted { size, .. })) => Vec3::new(0.0, -(size.y / 2.0 + 0.003), -0.31 - length / 2.0),
         (None, None) => Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0),
     };

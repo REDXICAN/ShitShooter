@@ -864,6 +864,7 @@ fn apply_volume(settings: Res<Settings>, args: Res<LaunchArgs>, mut global: ResM
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::weapons::REFLEX;
 
     #[test]
     fn settings_survive_a_save_and_load() {
@@ -896,6 +897,8 @@ mod tests {
         settings.cycle_sight(0);
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
         settings.cycle_sight(1);
+        assert_eq!(settings.sight_for(smg), REFLEX);
+        settings.cycle_sight(1);
         assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
     }
 
@@ -908,13 +911,15 @@ sight.Pistol = Scope
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
         let mut seen = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             settings.cycle_sight(0);
             seen.push(settings.sight_for(SNIPER));
         }
-        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, SCOPE]);
+        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, REFLEX, SCOPE]);
         settings.cycle_sight(1);
         assert_eq!(settings.sight_for(PISTOL), RED_DOT);
+        settings.cycle_sight(1);
+        assert_eq!(settings.sight_for(PISTOL), REFLEX);
         settings.cycle_sight(1);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
     }

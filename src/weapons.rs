@@ -28,6 +28,9 @@ pub struct Weapon {
     pub mobility: f32,
     /// Size of the gun in first person: width, height, length (metres).
     pub size: [f32; 3],
+    /// How far in front of the eye a sight's dot is held when aiming: close
+    /// for a gun held to the shoulder, further out for a pistol held in front.
+    pub sight_relief: f32,
     /// Playback speed of the gunshot sound: lower is deeper.
     pub pitch: f32,
     /// How far each shot throws the view up, and at most sideways (radians).
@@ -56,6 +59,7 @@ pub type SightId = u8;
 pub const IRON_SIGHTS: SightId = 0;
 pub const RED_DOT: SightId = 1;
 pub const SCOPE: SightId = 2;
+pub const REFLEX: SightId = 3;
 
 pub struct Sight {
     pub name: &'static str,
@@ -71,7 +75,7 @@ pub struct Sight {
     pub overlay: bool,
 }
 
-pub const SIGHTS: [Sight; 3] = [
+pub const SIGHTS: [Sight; 4] = [
     Sight {
         name: "Iron sights",
         path: None,
@@ -89,6 +93,13 @@ pub const SIGHTS: [Sight; 3] = [
         path: Some("models/sights/scope.glb"),
         zoom: Some(0.25),
         overlay: true,
+    },
+    // An open window with a ring round the dot: low and light, so it suits a pistol too.
+    Sight {
+        name: "Reflex",
+        path: Some("models/sights/reflex.glb"),
+        zoom: None,
+        overlay: false,
     },
 ];
 
@@ -147,6 +158,7 @@ pub const WEAPONS: [Weapon; 6] = [
         zoom: 0.62,
         mobility: 1.0,
         size: [0.04, 0.055, 0.3],
+        sight_relief: 0.08,
         pitch: 1.0,
         kick_up: 0.014,
         kick_side: 0.006,
@@ -154,7 +166,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/M4A1.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT],
+            sights: &[RED_DOT, REFLEX],
         }),
     },
     Weapon {
@@ -172,6 +184,7 @@ pub const WEAPONS: [Weapon; 6] = [
         zoom: 0.75,
         mobility: 1.05,
         size: [0.04, 0.06, 0.2],
+        sight_relief: 0.08,
         pitch: 1.3,
         kick_up: 0.012,
         kick_side: 0.007,
@@ -179,7 +192,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/MP7.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT],
+            sights: &[RED_DOT, REFLEX],
         }),
     },
     Weapon {
@@ -197,6 +210,7 @@ pub const WEAPONS: [Weapon; 6] = [
         zoom: 0.8,
         mobility: 1.0,
         size: [0.05, 0.06, 0.34],
+        sight_relief: 0.08,
         pitch: 0.7,
         kick_up: 0.075,
         kick_side: 0.018,
@@ -222,6 +236,7 @@ pub const WEAPONS: [Weapon; 6] = [
         zoom: 0.55,
         mobility: 0.9,
         size: [0.035, 0.05, 0.44],
+        sight_relief: 0.08,
         pitch: 0.55,
         kick_up: 0.1,
         kick_side: 0.012,
@@ -229,7 +244,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/SCAR.gltf",
             barrel_plus_z: true,
-            sights: &[RED_DOT, SCOPE],
+            sights: &[RED_DOT, REFLEX, SCOPE],
         }),
     },
     Weapon {
@@ -247,6 +262,7 @@ pub const WEAPONS: [Weapon; 6] = [
         zoom: 0.78,
         mobility: 1.05,
         size: [0.035, 0.05, 0.15],
+        sight_relief: 0.18,
         pitch: 1.45,
         kick_up: 0.03,
         kick_side: 0.007,
@@ -254,7 +270,7 @@ pub const WEAPONS: [Weapon; 6] = [
         model: Some(Model {
             path: "models/M1911Tactical.gltf",
             barrel_plus_z: false,
-            sights: &[RED_DOT],
+            sights: &[RED_DOT, REFLEX],
         }),
     },
     Weapon {
@@ -273,6 +289,7 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.12,
         // Blade and handle together.
         size: [0.012, 0.04, 0.3],
+        sight_relief: 0.08,
         pitch: 1.0,
         kick_up: 0.0,
         kick_side: 0.0,
