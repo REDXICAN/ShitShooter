@@ -28,7 +28,6 @@ use crate::{
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
-    weapons::{KNIFE, weapon},
     world::{GameMap, MainCamera},
 };
 
@@ -55,10 +54,10 @@ pub const ACCENT: Color = Color::srgb(1.0, 0.62, 0.2);
 const DANGER: Color = Color::srgb(1.0, 0.35, 0.3);
 const GOOD: Color = Color::srgb(0.38, 0.86, 0.50);
 /// Behind the HUD's panels: see-through, so the game shows past them.
-const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
+pub const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
 pub const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 /// The empty part of a bar.
-const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
+pub const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
 /// Our team, wherever it shows: the outline around teammates, their names,
 /// our score. Everybody else is the enemy.
 pub const ALLY: Color = Color::srgb(0.30, 0.86, 1.0);
@@ -1062,17 +1061,6 @@ enum Hud {
     Respawn,
     /// Under the loadout on the death screen: the keys that change it.
     DeadKeys,
-    /// The name of the weapon in hand.
-    WeaponTitle,
-    Ammo,
-    /// The size of the magazine, after the ammo.
-    Magazine,
-    /// The key of one of the three weapon slots, and what is in it.
-    SlotKey(usize),
-    SlotName(usize),
-    /// The grenade key, and the name of the grenade carried.
-    GrenadeKey,
-    GrenadeName,
     /// Under the crosshair: the grenade in hand, and what a click does with it
     /// (or a cooking frag's fuse).
     Hand,
@@ -1094,15 +1082,7 @@ enum Bar {
     HealthLag,
     Armor,
     Dash,
-    /// Rounds left in the magazine, or how far along the reload is.
-    Ammo,
-    /// One of the grenades carried, filling up as it recharges.
-    Grenade(usize),
 }
-
-/// The box around one of the three weapon slots; lit when it is in hand.
-#[derive(Component)]
-struct SlotChip(usize);
 
 /// The box around one line of the kill feed.
 #[derive(Component)]
@@ -1169,7 +1149,7 @@ fn hud_text(size: f32, color: Color, hud: Hud) -> impl Bundle {
     (label("", size, color), hud_shadow(), hud)
 }
 
-fn hud_shadow() -> TextShadow {
+pub fn hud_shadow() -> TextShadow {
     TextShadow {
         offset: Vec2::splat(1.5),
         color: Color::srgba(0.0, 0.0, 0.0, 0.8),
@@ -1231,53 +1211,6 @@ fn score_block(side: usize) -> impl Bundle {
         children![
             hud_text(12.0, DIM, Hud::ScoreLabel(side)),
             hud_text(26.0, TEXT, Hud::Score(side)),
-        ],
-    )
-}
-
-fn chip_node() -> Node {
-    Node {
-        align_items: AlignItems::Center,
-        column_gap: px(6),
-        padding: UiRect::axes(px(8), px(4)),
-        border: UiRect::all(px(1)),
-        border_radius: BorderRadius::all(px(5)),
-        ..default()
-    }
-}
-
-/// A slot for each grenade that can be carried, filling up as it recharges.
-/// Slots beyond what the grenade in hand allows are hidden.
-#[derive(Component)]
-struct GrenadeSlot(usize);
-
-fn grenade_bars() -> impl Bundle {
-    let bars = (0..MOST_GRENADES)
-        .map(|index| (GrenadeSlot(index), bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(index), TEXT)]));
-    (
-        Node {
-            column_gap: px(4),
-            ..default()
-        },
-        Children::spawn(SpawnIter(bars)),
-    )
-}
-
-/// The grenade carried: its name and how many.
-fn grenade_chip() -> impl Bundle {
-    (chip_node(), children![hud_text(14.0, DIM, Hud::GrenadeName), grenade_bars()])
-}
-
-/// A weapon slot: its key and what is in it.
-fn slot_chip(slot: usize) -> impl Bundle {
-    (
-        SlotChip(slot),
-        chip_node(),
-        BackgroundColor(Color::NONE),
-        BorderColor::all(Color::NONE),
-        children![
-            hud_text(12.0, DIM, Hud::SlotKey(slot)),
-            hud_text(14.0, DIM, Hud::SlotName(slot)),
         ],
     )
 }
@@ -1576,67 +1509,6 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ],
     ));
 
-    // Weapons and ammo, bottom right.
-    commands.spawn((
-        hud_anchor(Node {
-            right: px(20),
-            bottom: px(18),
-            ..default()
-        }),
-        children![(
-            hud_panel(Node {
-                min_width: px(280),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(6),
-                padding: UiRect::axes(px(14), px(10)),
-                ..default()
-            }),
-            children![
-                (
-                    Node {
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::End,
-                        column_gap: px(4),
-                        ..default()
-                    },
-                    children![hud_text(12.0, DIM, Hud::GrenadeKey), grenade_chip()],
-                ),
-                (
-                    Node {
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::End,
-                        column_gap: px(4),
-                        ..default()
-                    },
-                    children![slot_chip(0), slot_chip(1), slot_chip(2)],
-                ),
-                (
-                    Node {
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::SpaceBetween,
-                        column_gap: px(16),
-                        ..default()
-                    },
-                    children![
-                        hud_text(13.0, DIM, Hud::WeaponTitle),
-                        (
-                            Node {
-                                align_items: AlignItems::Baseline,
-                                column_gap: px(8),
-                                ..default()
-                            },
-                            children![
-                                hud_text(40.0, TEXT, Hud::Ammo),
-                                hud_text(20.0, DIM, Hud::Magazine),
-                            ],
-                        ),
-                    ],
-                ),
-                (bar_track(percent(100), 6.0), children![bar_fill(Bar::Ammo, TEXT)]),
-            ],
-        )],
-    ));
-
     // The death screen: who got us, when we respawn, and the loadout we will
     // respawn with. The mouse is free while it shows, so the loadout can be
     // changed; a click anywhere off the card respawns us.
@@ -1911,20 +1783,12 @@ fn update_hud(
     connection: Option<Res<Connection>>,
     mut texts: Query<(&Hud, &mut Text, &mut TextColor)>,
 ) {
-    let gun = player.guns.get(player.slot);
-    let stats = player.weapon();
     let top = top_bar(&session);
     // A notice fades out over its last half second.
     let notice = |notice: &Option<(String, f32)>, color: Color| match notice {
         Some((text, left)) => (text.clone(), color.with_alpha((left / 0.5).min(1.0))),
         None => (String::new(), color),
     };
-    let slot_actions = [Action::Primary, Action::Secondary, Action::Knife];
-    let slot_names = [
-        weapon(player.guns[0].weapon).name,
-        weapon(player.guns[1].weapon).name,
-        weapon(KNIFE).name,
-    ];
     for (hud, mut text, mut color) in &mut texts {
         let (value, wanted) = match *hud {
             Hud::Clock => (
@@ -1971,44 +1835,6 @@ fn update_hud(
                 ),
                 DIM,
             ),
-            Hud::WeaponTitle => {
-                if gun.is_some() && player.reloading() {
-                    ("RELOADING".to_string(), ACCENT)
-                } else {
-                    (stats.name.to_uppercase(), DIM)
-                }
-            }
-            Hud::Ammo => match gun {
-                Some(gun) => (
-                    gun.ammo.to_string(),
-                    // Running low.
-                    if gun.ammo * 4 <= stats.magazine { ACCENT } else { TEXT },
-                ),
-                None => (String::new(), TEXT),
-            },
-            Hud::Magazine => (
-                gun.map_or(String::new(), |_| format!("/ {}", stats.magazine)),
-                DIM,
-            ),
-            Hud::SlotKey(slot) => (
-                settings.key_name(slot_actions[slot]),
-                if slot == player.slot { ACCENT } else { DIM },
-            ),
-            Hud::SlotName(slot) => (
-                slot_names[slot].to_string(),
-                if slot == player.slot { TEXT } else { DIM },
-            ),
-            Hud::GrenadeKey => (settings.key_name(Action::Grenade), DIM),
-            Hud::GrenadeName => (
-                grenade(player.grenade).name.to_uppercase(),
-                if player.hand.is_some() {
-                    ACCENT
-                } else if player.grenades >= 1.0 {
-                    TEXT
-                } else {
-                    DIM
-                },
-            ),
             Hud::Hand => match player.hand.filter(|_| player.alive) {
                 Some(hand) => {
                     let name = GRENADES[hand.kind as usize].name.to_uppercase();
@@ -2048,14 +1874,8 @@ fn update_hud_shapes(
     feed: Res<KillFeed>,
     mut health_lag: Local<f32>,
     mut bars: Query<(&Bar, &mut Node, &mut BackgroundColor)>,
-    mut chips: Query<(&SlotChip, &mut BackgroundColor, &mut BorderColor), Without<Bar>>,
-    mut rows: Query<(&FeedRow, &mut Node, &mut BackgroundColor), (Without<Bar>, Without<SlotChip>)>,
-    mut grenade_slots: Query<(&GrenadeSlot, &mut Node), (Without<Bar>, Without<FeedRow>)>,
+    mut rows: Query<(&FeedRow, &mut Node, &mut BackgroundColor), Without<Bar>>,
 ) {
-    let carried = grenade(player.grenade).max as usize;
-    for (slot, mut node) in &mut grenade_slots {
-        set_shown(&mut node, slot.0 < carried);
-    }
     let health = if player.alive { player.health.max(0) } else { 0 };
     let health_part = health as f32 / MAX_HEALTH as f32;
     // What was just lost drains away behind the bar; healing catches up at once.
@@ -2069,16 +1889,6 @@ fn update_hud_shapes(
         GOOD
     };
 
-    let gun = player.guns.get(player.slot);
-    let stats = player.weapon();
-    let (ammo_part, ammo_color) = match gun {
-        Some(_) if player.reloading() => (1.0 - player.reload / stats.reload.max(0.01), ACCENT),
-        Some(gun) => (
-            gun.ammo as f32 / stats.magazine.max(1) as f32,
-            if gun.ammo * 4 <= stats.magazine { ACCENT } else { TEXT },
-        ),
-        None => (0.0, TEXT),
-    };
     let dash_part = 1.0 - player.dash_cooldown / DASH_COOLDOWN;
     let armor_part = if player.alive { player.armor.max(0) as f32 / MAX_ARMOR as f32 } else { 0.0 };
 
@@ -2088,11 +1898,6 @@ fn update_hud_shapes(
             Bar::HealthLag => (*health_lag, Color::srgba(1.0, 1.0, 1.0, 0.75)),
             Bar::Armor => (armor_part, ARMOR),
             Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
-            Bar::Ammo => (ammo_part, ammo_color),
-            Bar::Grenade(index) => {
-                let part = player.grenades - index as f32;
-                (part, if part >= 1.0 { TEXT } else { DIM })
-            }
         };
         let width = percent(part.clamp(0.0, 1.0) * 100.0);
         if node.width != width {
@@ -2100,18 +1905,6 @@ fn update_hud_shapes(
         }
         if background.0 != color {
             background.0 = color;
-        }
-    }
-
-    for (chip, mut background, mut border) in &mut chips {
-        let (fill, edge) = if chip.0 == player.slot {
-            (Color::srgba(1.0, 1.0, 1.0, 0.10), ACCENT.with_alpha(0.7))
-        } else {
-            (Color::NONE, Color::NONE)
-        };
-        if background.0 != fill {
-            background.0 = fill;
-            *border = BorderColor::all(edge);
         }
     }
 

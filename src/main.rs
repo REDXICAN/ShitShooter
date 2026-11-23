@@ -25,6 +25,7 @@ mod remote;
 mod server;
 mod settings;
 mod ui;
+mod weapon_panel;
 mod weapons;
 mod world;
 
@@ -203,7 +204,7 @@ fn main() {
             loadout::LoadoutPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,
-            ui::UiPlugin,
+            (ui::UiPlugin, weapon_panel::WeaponPanelPlugin),
             audio::AudioPlugin,
             devtools::DevToolsPlugin,
         ))

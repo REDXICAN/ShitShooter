@@ -461,6 +461,17 @@ fn selftest_play(
         }
     }
 
+    // The weapon panel: its strip of slots just after a switch, and the ring
+    // while reloading.
+    if t > 5.75 && !captured.switch {
+        captured.switch = true;
+        test.capture(&mut commands, "panel_switch.png");
+    }
+    if t > 7.0 && player.reloading() && !captured.reload {
+        captured.reload = true;
+        test.capture(&mut commands, "panel_reload.png");
+    }
+
     if test.reached(2, 3.3) {
         test.capture(&mut commands, "ping.png");
     }
@@ -531,6 +542,8 @@ struct Captured {
     ally: bool,
     hurt: bool,
     dead: bool,
+    switch: bool,
+    reload: bool,
     /// The first body to fall, and how many pictures of it have been taken.
     body: Option<Entity>,
     body_shots: usize,
