@@ -1,5 +1,5 @@
 //! Pings: point out an enemy (or a spot) to your team, as often as you like.
-//! The marker follows a pinged enemy around, through walls, for a few seconds. The server passes
+//! The marker stays where a pinged enemy was, seen through walls, for a few seconds. The server passes
 //! pings on to the pinger's teammates only, so the other team never sees them.
 
 use bevy::{prelude::*, window::PrimaryWindow};
@@ -67,7 +67,7 @@ struct Ping {
     from: PlayerId,
     /// The enemy pinged, if it was one.
     target: Option<PlayerId>,
-    /// Where it is: the spot, or where the enemy was last seen.
+    /// Where it is: the spot, or where the enemy was when pinged.
     pos: Vec3,
     /// Seconds it has left on screen.
     left: f32,
@@ -200,10 +200,9 @@ fn screen_point(camera: &Transform, fov: f32, size: Vec2, world: Vec3) -> Vec2 {
 fn draw_markers(
     mut commands: Commands,
     session: Res<Session>,
-    mut pings: ResMut<Pings>,
+    pings: Res<Pings>,
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
-    remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
     mut markers: Query<(Entity, &PingMarker, &mut Node)>,
     mut labels: Query<(&PingLabel, &mut Text, &mut TextColor)>,
     mut diamonds: Query<(&PingDiamond, &mut BackgroundColor)>,
@@ -214,15 +213,6 @@ fn draw_markers(
         _ => 1.0,
     };
     let size = Vec2::new(window.width(), window.height());
-
-    // A pinged enemy is followed for as long as we can see where they are.
-    for ping in &mut pings.list {
-        if let Some(target) = ping.target
-            && let Some((_, transform)) = remotes.iter().find(|(remote, _)| remote.id == target && remote.alive)
-        {
-            ping.pos = transform.translation;
-        }
-    }
 
     for (entity, marker, _) in &markers {
         if !pings.list.iter().any(|ping| ping.from == marker.0) {
@@ -240,15 +230,12 @@ fn draw_markers(
         let color = color.with_alpha(fade);
         let diamond_color = color.with_alpha(fade * DIAMOND_ALPHA);
 
-        // "ENEMY" over an enemy, and who pinged it when it was not us.
-        let lines: Vec<&str> = [
-            enemy.then_some("ENEMY"),
-            (ping.from != session.my_id).then(|| session.name_of(ping.from)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let text = lines.join("\n");
+        // Who pinged it, when it was not us.
+        let text = if ping.from != session.my_id {
+            session.name_of(ping.from).to_string()
+        } else {
+            String::new()
+        };
 
         if let Some((_, _, mut node)) = markers.iter_mut().find(|(_, marker, _)| marker.0 == ping.from) {
             if node.left != left || node.top != top {
