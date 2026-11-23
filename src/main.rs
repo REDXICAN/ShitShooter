@@ -204,6 +204,7 @@ fn main() {
                 }),
         )
         .insert_resource(args)
+        .add_systems(Update, set_window_icon)
         .init_state::<AppState>()
         .add_plugins((
             net::NetPlugin,
@@ -226,6 +227,34 @@ fn main() {
         .run();
     log_line(&format!("exited: {exit:?}"));
 }
+
+/// Gives the game window the icon that build.rs embedded in the exe, for its
+/// title bar and taskbar button. Bevy has no setting for this, so it goes
+/// through winit directly, once the window exists.
+#[cfg(windows)]
+fn set_window_icon(
+    mut done: Local<bool>,
+    window: Option<Single<Entity, With<bevy::window::PrimaryWindow>>>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
+) {
+    use winit::platform::windows::IconExtWindows;
+    if *done {
+        return;
+    }
+    let Some(window) = window else { return };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        let Some(winit_window) = windows.get_window(*window) else { return };
+        // Resource ID 1, as set in build.rs. Windows picks the size it needs.
+        match winit::window::Icon::from_resource(1, None) {
+            Ok(icon) => winit_window.set_window_icon(Some(icon)),
+            Err(err) => warn!("could not load the window icon: {err}"),
+        }
+        *done = true;
+    });
+}
+
+#[cfg(not(windows))]
+fn set_window_icon() {}
 
 /// `shitshooter.log`, written next to the exe on every run. When the game will
 /// not start on someone's PC, this file says how far it got and what went wrong.

@@ -10,6 +10,15 @@ renet = { version = "2.0.1", default-features = false }
 renet_netcode = { version = "2.0.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 
+# Only for setting the window's icon: Bevy has no setting for it. Must stay the
+# same winit version Bevy uses.
+[target."cfg(windows)".dependencies]
+winit = { version = "0.30", default-features = false }
+
+# Embeds icon.ico into the exe (see build.rs).
+[build-dependencies]
+winresource = "0.1.34"
+
 # Light optimisation for our code, full optimisation for dependencies (Bevy is
 # unusably slow at opt-level 0).
 [profile.dev]
