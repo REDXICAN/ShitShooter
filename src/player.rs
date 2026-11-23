@@ -64,7 +64,7 @@ const KICK_RECOVERY: f32 = 9.0;
 pub const BASE_FOV: f32 = 1.3;
 pub const VIEW_MODEL_REST: Vec3 = Vec3::new(0.2, -0.17, -0.42);
 /// How far in front of the eye a sight's dot is held when aiming.
-const SIGHT_EYE_RELIEF: f32 = 0.12;
+const SIGHT_EYE_RELIEF: f32 = 0.08;
 /// `LocalPlayer::slot` when the knife is out (0 and 1 are the gun slots).
 pub const KNIFE_SLOT: usize = 2;
 

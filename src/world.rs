@@ -178,7 +178,7 @@ fn setup(
         SpatialListener::new(0.3),
         Projection::from(PerspectiveProjection {
             fov: crate::player::BASE_FOV,
-            near: 0.05,
+            near: 0.01,
             ..default()
         }),
         Transform::from_xyz(0.0, 30.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
