@@ -36,7 +36,7 @@ const STOP_SPEED: f32 = 3.0;
 const AIR_WISH_SPEED: f32 = 1.0;
 /// Extra air control (m/s²) that only applies below running speed.
 const AIR_CONTROL_ACCEL: f32 = 25.0;
-const GRAVITY: f32 = 22.0;
+pub const GRAVITY: f32 = 22.0;
 const JUMP_SPEED: f32 = 8.0;
 const AIR_JUMPS: u32 = 1;
 const DASH_SPEED: f32 = 20.0;

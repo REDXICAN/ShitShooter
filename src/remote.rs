@@ -9,12 +9,12 @@ use crate::{
     map::{CROUCH_HALF, PLAYER_HALF},
     net::{NetMsg, Session, SnapshotMsg},
     paint::{BODY_HEIGHT, BODY_RADIUS, BODY_Y, HEAD_RADIUS, HEAD_Y, NECK, PlayerModel, Skins},
-    player::{LocalPlayer, PlayerSystems, magazine_out},
+    player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out},
     gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
     ui::ALLY,
     weapons::{SightId, WeaponId, weapon},
-    world::{MainCamera, SharedAssets},
+    world::{GameMap, MainCamera, SharedAssets},
 };
 
 /// Remote players are drawn this far in the past, so there are always two
@@ -304,6 +304,12 @@ const CORPSE_FALL: f32 = 0.45;
 pub struct Corpse {
     /// Seconds since they died.
     pub age: f32,
+    /// Their collision box when they died, which drops until it lands: shot in
+    /// the air, the body falls to the floor instead of lying on nothing.
+    half: Vec3,
+    center: Vec3,
+    vel: Vec3,
+    landed: bool,
 }
 
 /// The part of a body that tips over, about its feet.
@@ -324,7 +330,13 @@ fn spawn_corpse(
     let half = if remote.crouching { CROUCH_HALF } else { PLAYER_HALF };
     let feet = transform.translation - Vec3::Y * half.y;
     commands.spawn((
-        Corpse { age: 0.0 },
+        Corpse {
+            age: 0.0,
+            half,
+            center: transform.translation,
+            vel: Vec3::ZERO,
+            landed: false,
+        },
         Transform::from_translation(feet).with_rotation(transform.rotation),
         Visibility::default(),
         DespawnOnExit(AppState::Playing),
@@ -360,15 +372,25 @@ fn spawn_corpse(
 fn settle_corpses(
     mut commands: Commands,
     time: Res<Time>,
+    map: Res<GameMap>,
     mut corpses: Query<(Entity, &mut Corpse, &mut Transform, &Children)>,
     mut pivots: Query<&mut Transform, (With<CorpsePivot>, Without<Corpse>)>,
 ) {
+    let dt = time.delta_secs();
     for (entity, mut corpse, mut transform, children) in &mut corpses {
         let before = corpse.age;
-        corpse.age += time.delta_secs();
+        corpse.age += dt;
         if corpse.age >= CORPSE_TIME + CORPSE_SINK {
             commands.entity(entity).despawn();
             continue;
+        }
+        // Falls with the same gravity and collision as a player, until it
+        // lands (or gives up when it starts sinking, e.g. off the map).
+        if !corpse.landed && corpse.age < CORPSE_TIME {
+            let Corpse { half, center, vel, landed, .. } = &mut *corpse;
+            vel.y -= GRAVITY * dt;
+            *landed = map.0.move_and_slide(center, vel, *half, dt);
+            transform.translation.y = center.y - half.y;
         }
         if before <= CORPSE_FALL {
             // Speeds up as it goes, like a fall, and lies on its back at the end,
