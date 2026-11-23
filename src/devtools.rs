@@ -17,7 +17,7 @@ use crate::{
     net::{Connection, MenuStatus, Session},
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
-    player::{Controls, GunSlot, LocalPlayer, PlayerSystems},
+    player::{Controls, DroppedMagazine, GunSlot, LocalPlayer, PlayerSystems},
     protocol::ClientMsg,
     map::PLAYER_HALF,
     loadout::{LoadoutArrow, Slot},
@@ -266,7 +266,7 @@ fn selftest_play(
     mut settings_menu: ResMut<SettingsMenu>,
     mut connection: ResMut<Connection>,
     remotes: Query<(&RemotePlayer, &Transform)>,
-    corpses: Query<(Entity, &Corpse, &Transform)>,
+    (corpses, dropped): (Query<(Entity, &Corpse, &Transform)>, Query<(&DroppedMagazine, &Transform)>),
     map: Res<GameMap>,
     cue_count: Res<CueCount>,
     mut last_target: Local<Option<(u64, Vec3)>>,
@@ -280,26 +280,35 @@ fn selftest_play(
             test.capture(&mut commands, "countdown.png");
         }
         // Nothing can happen before the match starts: a look at every gun in
-        // the first slot, from the hip and aimed, a few frames each.
-        if session.countdown < 2.4 && player.alive && !session.team_mode() {
-            const FRAMES: u32 = 12;
-            let picture = captured.gallery / FRAMES;
-            let gun = (picture / 2) as WeaponId;
-            let aimed = picture % 2 == 1;
+        // the first slot, from the hip, aimed, and part way through a reload
+        // from empty (a magazine coming out, or a shell going in), a few
+        // frames each.
+        if session.countdown < 2.6 && player.alive && !session.team_mode() {
+            const FRAMES: u32 = 10;
+            const VIEWS: [&str; 3] = ["hip", "aimed", "reload"];
+            let picture = (captured.gallery / FRAMES) as usize;
+            let gun = (picture / VIEWS.len()) as WeaponId;
+            let view = VIEWS[picture % VIEWS.len()];
             let first = *captured.gallery_gun.get_or_insert(player.guns[0]);
             if gun < GUN_COUNT {
+                let stats = weapon(gun);
                 player.slot = 0;
                 player.guns[0].weapon = gun;
                 player.guns[0].sight = IRON_SIGHTS;
-                player.aim = aimed as u8 as f32;
+                player.guns[0].ammo = if view == "reload" { 0 } else { stats.magazine };
+                player.aim = (view == "aimed") as u8 as f32;
+                let progress = if stats.reload_per_round { 0.3 } else { 0.27 };
+                player.reload = if view == "reload" { stats.reload * (1.0 - progress) } else { 0.0 };
+                player.reload_empty = view == "reload";
                 if captured.gallery % FRAMES == FRAMES - 3 {
-                    let name = format!("gun_{}_{}.png", weapon(gun).name.to_lowercase(), if aimed { "aimed" } else { "hip" });
-                    test.capture(&mut commands, &name);
+                    test.capture(&mut commands, &format!("gun_{}_{view}.png", stats.name.to_lowercase()));
                 }
                 captured.gallery += 1;
             } else {
                 player.guns[0] = first;
                 player.aim = 0.0;
+                player.reload = 0.0;
+                player.reload_empty = false;
             }
         }
         // In the team modes, a look at the nearest teammate: outlined, named.
@@ -490,6 +499,10 @@ fn selftest_play(
         captured.switch = true;
         test.capture(&mut commands, "panel_switch.png");
     }
+    if dropped.iter().any(|(magazine, _)| !magazine.landed) && !captured.drop {
+        captured.drop = true;
+        test.capture(&mut commands, "magazine_drop.png");
+    }
     if t > 7.0 && player.reloading() && !captured.reload {
         captured.reload = true;
         test.capture(&mut commands, "panel_reload.png");
@@ -552,6 +565,7 @@ fn selftest_play(
             player.grenades
         );
         println!("[selftest] sound cues (own, others): {:?}", *cue_count);
+        println!("[selftest] dropped magazines: {:?}", dropped.iter().map(|(magazine, at)| (magazine.landed, at.translation.y)).collect::<Vec<_>>());
         println!("[selftest] mode {} team scores {:?} my team {}", session.mode, session.team_scores, session.team_of(session.my_id));
         connection.send(&ClientMsg::EndMatch);
     }
@@ -567,6 +581,7 @@ struct Captured {
     dead: bool,
     switch: bool,
     reload: bool,
+    drop: bool,
     /// The first body to fall, and how many pictures of it have been taken.
     body: Option<Entity>,
     body_shots: usize,
@@ -602,7 +617,9 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
             Sound::Kill => &mut count.kills,
             Sound::Footstep => &mut count.footsteps,
             Sound::Land => &mut count.landings,
-            Sound::Reload => &mut count.reloads,
+            Sound::Reload | Sound::MagOut | Sound::MagIn | Sound::Bolt | Sound::ShellIn | Sound::Pump => {
+                &mut count.reloads
+            }
             Sound::Pin | Sound::Throw => &mut count.throws,
             Sound::Bounce => &mut count.bounces,
             Sound::Explosion | Sound::Flashbang | Sound::SmokePop => &mut count.explosions,

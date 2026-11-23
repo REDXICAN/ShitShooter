@@ -11,7 +11,7 @@ use crate::{
     audio::{Sound, SoundCue},
     map,
     net::{Connection, NetMsg, Session},
-    player::{InHand, KNIFE_SLOT, LocalPlayer, PlayerSystems},
+    player::{BOLT_HOME, InHand, KNIFE_SLOT, LocalPlayer, MAGAZINE_IN, MAGAZINE_OUT, PlayerSystems, RACK_TIME},
     protocol::*,
     remote::{RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
@@ -195,22 +195,66 @@ fn fire(
     let stats = weapon(weapon_id);
     let slot = player.slot;
 
-    // Reloading: by hand, or by itself once the magazine is empty.
-    if let Some(gun) = player.guns.get_mut(slot) {
+    // Reloading: by hand, or by itself once the magazine is empty. Its sounds
+    // come as the hands get to each part of it.
+    if player.reload <= 0.0 {
+        player.racking = false;
+    }
+    if player.slot < player.guns.len() {
         if player.reload > 0.0 {
+            let before = player.reload_progress();
             player.reload -= dt;
+            let after = player.reload_progress();
+            let passed = |at: f32| before < at && after >= at;
+            if player.racking {
+                if passed(0.1) {
+                    own_sound(Sound::Pump);
+                }
+            } else if stats.reload_per_round {
+                // Firing stops a round by round reload after the round going in.
+                if input.just_pressed(Action::Fire) {
+                    player.reload_stop = true;
+                }
+                if passed(0.55) {
+                    own_sound(Sound::ShellIn);
+                }
+            } else {
+                if passed(MAGAZINE_OUT) {
+                    own_sound(Sound::MagOut);
+                }
+                if passed(MAGAZINE_IN) {
+                    own_sound(Sound::MagIn);
+                }
+                if passed(BOLT_HOME) && player.reload_empty {
+                    own_sound(Sound::Bolt);
+                }
+            }
             if player.reload <= 0.0 {
+                let gun = &mut player.guns[slot];
                 player.reload = 0.0;
-                gun.ammo = stats.magazine;
-                own_sound(Sound::Reload);
+                if player.racking {
+                    player.racking = false;
+                } else if stats.reload_per_round {
+                    gun.ammo += 1;
+                    if gun.ammo < stats.magazine && !player.reload_stop {
+                        player.reload = stats.reload;
+                    } else if player.reload_empty {
+                        // Nothing in the chamber yet: work the pump.
+                        player.racking = true;
+                        player.reload = RACK_TIME;
+                    }
+                } else {
+                    gun.ammo = stats.magazine;
+                }
             }
         } else if player.draw <= 0.0
             && player.hand.is_none()
-            && gun.ammo < stats.magazine
-            && (gun.ammo == 0 || input.just_pressed(Action::Reload))
+            && player.guns[slot].ammo < stats.magazine
+            && (player.guns[slot].ammo == 0 || input.just_pressed(Action::Reload))
         {
             player.reload = stats.reload;
-            own_sound(Sound::Reload);
+            player.reload_empty = player.guns[slot].ammo == 0;
+            player.reload_stop = false;
         }
     }
 
@@ -287,7 +331,8 @@ fn fire(
     // Automatic weapons fire while the trigger is held; the others once per click.
     if input.just_pressed(Action::Fire) {
         *trigger_buffer = TRIGGER_BUFFER;
-    } else {
+    } else if !(player.reload_stop && player.reloading()) {
+        // A click that stops a round by round reload fires once it is done.
         *trigger_buffer = (*trigger_buffer - dt).max(0.0);
     }
     let trigger = if stats.auto {

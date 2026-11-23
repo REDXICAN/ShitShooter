@@ -1,6 +1,7 @@
 //! The weapon panel at the bottom right of the HUD: the grenades carried, a
 //! picture of the weapon in hand, and its ammo, with a ring that fills
-//! around the seconds left while reloading.
+//! around the seconds left while reloading (or, loading round by round, for
+//! each round, around the rounds still to load).
 //!
 //! Only the weapon in hand shows. On a switch its picture slides in, and a
 //! strip with all three slots shows over the panel for a moment. The panel
@@ -472,7 +473,8 @@ fn update_panel(
         Some(gun) => Preview::gun(gun.weapon, gun.sight),
         None => Preview::Gun(KNIFE, IRON_SIGHTS),
     };
-    let reload_part = if reloading { 1.0 - player.reload / stats.reload.max(0.01) } else { 0.0 };
+    // Loading round by round, the ring fills for each round.
+    let reload_part = player.reload_progress();
     let ammo_color = if low {
         ACCENT
     } else if ammo == Some(stats.magazine) {
@@ -596,7 +598,12 @@ fn update_panel(
                 set_image(ring.fills.get(step.min(RING_STEPS)).cloned(), fade(ACCENT));
             }
             Part::RingText => {
-                write(format!("{:.1}", player.reload.max(0.0)));
+                // The seconds left, or the rounds still to load.
+                write(match ammo {
+                    _ if player.racking => String::new(),
+                    Some(ammo) if stats.reload_per_round => (stats.magazine - ammo).to_string(),
+                    _ => format!("{:.1}", player.reload.max(0.0)),
+                });
                 set_color(fade(ACCENT));
             }
             Part::BarTrack => set_background(background, fade(TRACK)),

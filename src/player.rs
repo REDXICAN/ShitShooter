@@ -14,7 +14,7 @@ use bevy::{
 
 use crate::{
     AppState,
-    gun_model::{Fitted, FittedModels, GunHolder},
+    gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
     map::{self, CROUCH_EYE, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
@@ -78,6 +78,29 @@ const HIP_SHORTEST: f32 = 0.26;
 pub fn hip_position(length: f32) -> Vec3 {
     HIP_DIRECTION * (HIP_BACK + length.max(HIP_SHORTEST) / 2.0)
 }
+/// Seconds it takes to work the pump after loading an empty shotgun.
+pub const RACK_TIME: f32 = 0.4;
+/// How far through a magazine reload: the magazine is let go and slides
+/// out; it has dropped away (and falls to the floor); the new one latches;
+/// the bolt or slide goes home.
+pub const MAGAZINE_OUT: f32 = 0.2;
+pub const MAGAZINE_DROPPED: f32 = 0.35;
+pub const MAGAZINE_IN: f32 = 0.78;
+pub const BOLT_HOME: f32 = 0.88;
+/// 0 -> 1 as the magazine comes out, 1 -> 0 as the new one goes in, over a
+/// magazine reload going from 0 to 1.
+pub fn magazine_out(progress: f32) -> f32 {
+    smooth((progress - 0.15) / 0.2) * smooth((0.8 - progress) / 0.2)
+}
+
+/// Eases 0 -> 1 in and out; clamped.
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Seconds a dropped magazine lies on the floor before it is gone.
+const DROPPED_MAGAZINE_TIME: f32 = 4.0;
 /// `LocalPlayer::slot` when the knife is out (0 and 1 are the gun slots).
 pub const KNIFE_SLOT: usize = 2;
 
@@ -120,9 +143,11 @@ impl Plugin for PlayerPlugin {
                         .in_set(PlayerSystems::Simulate)
                         .run_if(in_state(AppState::Playing)),
                     while_dead.after(toggle_pause).run_if(in_state(AppState::Playing)),
-                    follow_camera
+                    (follow_camera, drop_magazine)
+                        .chain()
                         .in_set(PlayerSystems::Camera)
                         .run_if(in_state(AppState::Playing)),
+                    fall_magazines.run_if(in_state(AppState::Playing)),
                     orbit_camera.run_if(not(in_state(AppState::Playing))),
                     grab_cursor,
                 ),
@@ -201,8 +226,18 @@ pub struct LocalPlayer {
     /// Seconds the gun in hand has been held aimed since the last shot, for
     /// a gun with a choke (see `Weapon::choke`).
     pub choked_for: f32,
-    /// Seconds until the reload finishes; 0 when not reloading.
+    /// Seconds until the reload (or, loading round by round, the round being
+    /// loaded, or the rack after it) is done; 0 when not reloading.
     pub reload: f32,
+    /// The reload started with the gun empty: it ends by working the bolt,
+    /// slide or pump.
+    pub reload_empty: bool,
+    /// Loading round by round: fire was pressed, so it stops after this round.
+    pub reload_stop: bool,
+    /// Loading round by round: the last step, working the pump.
+    pub racking: bool,
+    /// 0 -> 1 as the gun is tipped to load it round by round, eased.
+    reload_pose: f32,
     /// The kind of grenade carried this life (picked in the loadout).
     pub grenade: GrenadeKind,
     /// How many of it are carried (whole ones can be thrown; the fraction is
@@ -254,6 +289,10 @@ impl Default for LocalPlayer {
             aim: 0.0,
             choked_for: 0.0,
             reload: 0.0,
+            reload_empty: false,
+            reload_stop: false,
+            racking: false,
+            reload_pose: 0.0,
             grenade: FRAG,
             grenades: grenade(FRAG).max,
             hand: None,
@@ -334,6 +373,17 @@ impl LocalPlayer {
 
     pub fn reloading(&self) -> bool {
         self.reload > 0.0
+    }
+
+    /// How long the current reload step takes: the whole reload, one round,
+    /// or the rack after the last round.
+    pub fn reload_step(&self) -> f32 {
+        if self.racking { RACK_TIME } else { self.weapon().reload.max(0.01) }
+    }
+
+    /// 0 -> 1 through the current reload step (see `reload_step`).
+    pub fn reload_progress(&self) -> f32 {
+        if self.reloading() { (1.0 - self.reload / self.reload_step()).clamp(0.0, 1.0) } else { 0.0 }
     }
 
     /// The weapon in hand.
@@ -759,12 +809,16 @@ fn follow_camera(
     mut player: ResMut<LocalPlayer>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
     view_model: Single<
-        (&mut Transform, &mut Visibility, &mut GunHolder),
+        (Entity, &mut Transform, &mut Visibility, &mut GunHolder),
         (With<ViewModel>, Without<MainCamera>, Without<ViewModelPart>),
     >,
     mut parts: Query<
         (&ViewModelPart, &mut Transform, &mut Visibility),
-        (Without<MainCamera>, Without<ViewModel>),
+        (Without<MainCamera>, Without<ViewModel>, Without<GunPart>),
+    >,
+    mut gun_parts: Query<
+        (&GunPart, &mut Transform, &mut Visibility),
+        (Without<MainCamera>, Without<ViewModel>, Without<ViewModelPart>),
     >,
 ) {
     let dt = time.delta_secs();
@@ -815,24 +869,24 @@ fn follow_camera(
     }
 
     // The gun: slides to the middle when aiming, kicks when fired, dips for a
-    // grenade throw, and tips over while the magazine is swapped.
-    let smooth = |t: f32| {
-        let t = t.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
-    };
+    // grenade throw, and turns over while it is reloaded.
     let stats = player.weapon();
     let [width, height, length] = stats.size;
     // Drawn as its model if it has one (once loaded), else as boxes.
     let model = fitted_models.get(player.weapon_id());
-    let reload = if player.reloading() {
-        1.0 - player.reload / stats.reload
+    let per_round = stats.reload_per_round;
+    // How far through a magazine reload (see `MAGAZINE_OUT` and the rest).
+    let reload = if player.reloading() && !per_round { player.reload_progress() } else { 0.0 };
+    // 0 -> 1 as the gun tips over, 1 -> 0 as it comes back up. Loading round by
+    // round it stays tipped from the first round to the last.
+    let loading = (player.reloading() && per_round) as u8 as f32;
+    player.reload_pose += (loading - player.reload_pose) * (dt * 10.0).min(1.0);
+    let tipped = if per_round {
+        smooth(player.reload_pose)
     } else {
-        0.0
+        smooth(reload / 0.18) * smooth((1.0 - reload) / 0.18)
     };
-    // 0 -> 1 as the gun tips over, 1 -> 0 as it comes back up.
-    let tipped = smooth(reload / 0.18) * smooth((1.0 - reload) / 0.18);
-    // 0 -> 1 as the old magazine drops away, 1 -> 0 as the new one goes in.
-    let magazine_out = smooth((reload - 0.15) / 0.2) * smooth((0.8 - reload) / 0.2);
+    let magazine_out = magazine_out(reload);
     let throw = (player.throw_anim * std::f32::consts::PI).sin();
     let hold = smooth(player.hold);
 
@@ -863,18 +917,20 @@ fn follow_camera(
         (None, None) => Vec3::new(0.0, -(height / 2.0 + 0.048), -0.31 - length / 2.0),
     };
 
-    let (mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
+    let (holder_entity, mut gun, mut gun_visibility, mut holder) = view_model.into_inner();
     holder.weapon = player.weapon_id();
     holder.sight = player.sight_id();
     gun.translation = hip_position(length).lerp(aimed, player.aim)
         + kick
-        + Vec3::new(0.0, -0.06, 0.0) * tipped
+        + Vec3::new(-0.05, 0.035, -0.03) * tipped
         + Vec3::new(0.0, -0.16, 0.05) * throw
         + Vec3::new(0.04, -0.14, 0.06) * hold
         + Vec3::new(0.0, -0.3, 0.0) * drawing;
-    gun.rotation = Quat::from_rotation_x(kick_pitch + tipped * 0.45 - throw * 0.5 - hold * 0.35 - drawing * 0.9)
+    // Reloading, it comes up towards the middle and rolls its underside
+    // towards us, so the magazine (or the loading port) is in view.
+    gun.rotation = Quat::from_rotation_x(kick_pitch + tipped * 0.1 - throw * 0.5 - hold * 0.35 - drawing * 0.9)
         * Quat::from_rotation_y(kick_yaw)
-        * Quat::from_rotation_z(tipped * 0.6);
+        * Quat::from_rotation_z(-tipped * 0.75);
 
     // The same few boxes make every weapon; only their sizes differ.
     let rear = length / 2.0;
@@ -920,6 +976,58 @@ fn follow_camera(
             *visibility = wanted;
         }
     }
+    // The parts of the model that move.
+    let in_hand = player.guns.get(player.slot).copied();
+    let empty = in_hand.is_some_and(|gun| gun.ammo == 0);
+    // The slide or bolt: kicked back by each shot, held back while empty, and
+    // let go near the end of the reload.
+    let held_back = (empty || player.reloading() && player.reload_empty) && !(reload >= BOLT_HOME);
+    let slide = if held_back { 1.0 } else { player.recoil * player.recoil };
+    // The pump: worked after each shot, and once more after loading it empty.
+    let pump_cycle = match in_hand {
+        _ if player.racking => player.reload_progress(),
+        Some(gun) if gun.cooldown > 0.0 => (stats.interval - gun.cooldown - 0.12) / 0.45,
+        _ => -1.0,
+    };
+    let pump = if (0.0..1.0).contains(&pump_cycle) { (pump_cycle * std::f32::consts::PI).sin() } else { 0.0 };
+    // A shell comes up from under the gun into the loading port and is pushed in.
+    let shell = (player.reloading() && per_round && !player.racking).then(|| player.reload_progress());
+    for (part, mut transform, mut visibility) in &mut gun_parts {
+        if part.holder != holder_entity || part.weapon != player.weapon_id() {
+            continue;
+        }
+        let shown = match part.kind {
+            PartKind::Magazine => {
+                part.pose_magazine(&mut transform, &mut visibility, magazine_out);
+                continue;
+            }
+            PartKind::Slide | PartKind::Bolt => {
+                part.pose(&mut transform, Vec3::Z * 0.14 * length * slide, Vec3::X, 0.0);
+                true
+            }
+            PartKind::Pump => {
+                part.pose(&mut transform, Vec3::Z * 0.085 * length * pump, Vec3::X, 0.0);
+                true
+            }
+            PartKind::Shell => match shell {
+                Some(at) if at < 0.8 => {
+                    let below = Vec3::new(0.0, -0.13, 0.02) * length;
+                    let port = Vec3::new(0.0, -0.025, 0.0) * length;
+                    let inside = Vec3::new(0.0, -0.012, -0.1) * length;
+                    let offset = if at < 0.5 {
+                        below.lerp(port, smooth(at / 0.5))
+                    } else {
+                        port.lerp(inside, smooth((at - 0.5) / 0.3))
+                    };
+                    part.pose(&mut transform, offset, Vec3::X, 0.5 * (1.0 - smooth(at / 0.5)));
+                    true
+                }
+                _ => false,
+            },
+        };
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    }
+
     // Looking through a scope, its lens fills the screen instead.
     let wanted = if player.alive && player.scope_view() < 1.0 {
         Visibility::Inherited
@@ -928,6 +1036,107 @@ fn follow_camera(
     };
     if *gun_visibility != wanted {
         *gun_visibility = wanted;
+    }
+}
+
+/// A magazine dropped in a reload, falling to the floor. Only for show:
+/// nothing collides with it.
+#[derive(Component)]
+pub struct DroppedMagazine {
+    vel: Vec3,
+    /// Turning, as an axis scaled by radians per second.
+    spin: Vec3,
+    age: f32,
+    pub landed: bool,
+    scale: Vec3,
+}
+
+/// Once the old magazine has dropped away from the gun in our hands, a copy
+/// of it falls from there to the floor.
+fn drop_magazine(
+    mut commands: Commands,
+    player: Res<LocalPlayer>,
+    mut last_progress: Local<f32>,
+    view_model: Single<Entity, With<ViewModel>>,
+    parts: Query<(Entity, &GunPart, &GlobalTransform)>,
+    descendants: Query<&Children>,
+    meshes: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, &GlobalTransform)>,
+) {
+    let progress = if player.reloading() && !player.weapon().reload_per_round {
+        player.reload_progress()
+    } else {
+        0.0
+    };
+    let dropped = *last_progress < MAGAZINE_DROPPED && progress >= MAGAZINE_DROPPED;
+    *last_progress = progress;
+    if !dropped {
+        return;
+    }
+    let Some((magazine, _, global)) = parts.iter().find(|(_, part, _)| {
+        part.holder == *view_model && part.weapon == player.weapon_id() && part.kind == PartKind::Magazine
+    }) else {
+        return;
+    };
+    let at = global.compute_transform();
+    // It keeps our speed, and is let go downwards and a little forwards.
+    let forward = map::look_dir(player.yaw, 0.0);
+    commands
+        .spawn((
+            DroppedMagazine {
+                vel: player.vel + forward * 0.6 - Vec3::Y * 1.5,
+                spin: forward.cross(Vec3::Y) * 5.0 + Vec3::Y * 1.5,
+                age: 0.0,
+                landed: false,
+                scale: at.scale,
+            },
+            at,
+            Visibility::default(),
+            DespawnOnExit(AppState::Playing),
+        ))
+        .with_children(|copy| {
+            for part in descendants.iter_descendants(magazine) {
+                if let Ok((mesh, material, mesh_global)) = meshes.get(part) {
+                    copy.spawn((mesh.clone(), material.clone(), mesh_global.reparented_to(global)));
+                }
+            }
+        });
+}
+
+/// Dropped magazines fall until they hit something, lie there a while, then
+/// shrink away.
+fn fall_magazines(
+    mut commands: Commands,
+    time: Res<Time>,
+    map: Res<GameMap>,
+    mut magazines: Query<(Entity, &mut DroppedMagazine, &mut Transform)>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    for (entity, mut magazine, mut transform) in &mut magazines {
+        magazine.age += dt;
+        let left = DROPPED_MAGAZINE_TIME - magazine.age;
+        if left <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if left < 0.3 {
+            transform.scale = magazine.scale * (left / 0.3);
+        }
+        if magazine.landed {
+            continue;
+        }
+        magazine.vel.y -= GRAVITY * dt;
+        let step = magazine.vel * dt;
+        let distance = step.length();
+        // It stops a little short of what it hits, as it hangs below its origin.
+        if distance > 0.0
+            && let Some(hit) = map.0.raycast(transform.translation, step / distance, distance + 0.04)
+        {
+            transform.translation += step / distance * (hit - 0.04).max(0.0);
+            magazine.landed = true;
+            continue;
+        }
+        transform.translation += step;
+        transform.rotation = Quat::from_scaled_axis(magazine.spin * dt) * transform.rotation;
     }
 }
 

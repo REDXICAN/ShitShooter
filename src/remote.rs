@@ -9,8 +9,8 @@ use crate::{
     map::{CROUCH_HALF, PLAYER_HALF},
     net::{NetMsg, Session, SnapshotMsg},
     paint::{BODY_HEIGHT, BODY_RADIUS, BODY_Y, HEAD_RADIUS, HEAD_Y, NECK, PlayerModel, Skins},
-    player::{LocalPlayer, PlayerSystems},
-    gun_model::{FittedModels, GunHolder, GunModelSystems},
+    player::{LocalPlayer, PlayerSystems, magazine_out},
+    gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
     ui::ALLY,
     weapons::{SightId, WeaponId, weapon},
@@ -72,6 +72,8 @@ pub struct RemotePlayer {
     crouch_pose: f32,
     /// 0 = gun up, 1 = gun lowered for a reload.
     reload_pose: f32,
+    /// Seconds since they started reloading (0 when they are not).
+    reload_for: f32,
     samples: VecDeque<Sample>,
 }
 
@@ -215,6 +217,7 @@ fn apply_snapshots(
                         pitch: snap.pitch,
                         crouch_pose: 0.0,
                         reload_pose: 0.0,
+                        reload_for: 0.0,
                         samples: VecDeque::from([sample]),
                     },
                     Transform::from_translation(Vec3::from(snap.pos)),
@@ -411,7 +414,14 @@ fn interpolate(
     mut pivots: Query<(&mut Transform, &Children), (Part<HeadPivot>, Without<Body>, Without<Gun>)>,
     mut bodies: Query<&mut Transform, (Part<Body>, Without<HeadPivot>, Without<Gun>)>,
     mut guns: Query<(&mut Transform, &mut GunHolder), (Part<Gun>, Without<HeadPivot>, Without<Body>)>,
+    mut gun_parts: Query<
+        (&GunPart, &mut Transform, &mut Visibility),
+        (Part<GunPart>, Without<HeadPivot>, Without<Body>, Without<Gun>),
+    >,
+    // How far out each remote gun's magazine is: (gun, weapon, 0 -> 1).
+    mut magazines: Local<Vec<(Entity, WeaponId, f32)>>,
 ) {
+    magazines.clear();
     let render_time = time.elapsed_secs_f64() - INTERP_DELAY;
     let ease = (time.delta_secs() * 12.0).min(1.0);
     let crouch_drop = PLAYER_HALF.y - CROUCH_HALF.y;
@@ -445,6 +455,12 @@ fn interpolate(
         let (crouch, reload) = (remote.crouching as u8 as f32, remote.reloading as u8 as f32);
         remote.crouch_pose += (crouch - remote.crouch_pose) * ease;
         remote.reload_pose += (reload - remote.reload_pose) * ease;
+        remote.reload_for = if remote.reloading { remote.reload_for + time.delta_secs() } else { 0.0 };
+        // Their magazine comes out and goes back in, as ours does (we are only
+        // told that they are reloading, so it is timed from when that started).
+        let stats = weapon(remote.weapon);
+        let progress = if stats.reload_per_round { 0.0 } else { remote.reload_for / stats.reload.max(0.01) };
+        let magazine_out = magazine_out(progress);
 
         // The reported position is the centre of their collision box, which is
         // the short one while they crouch. Pose the model around it.
@@ -462,6 +478,7 @@ fn interpolate(
                 pivot.rotation = Quat::from_rotation_x(remote.pitch);
                 for part in parts.iter() {
                     if let Ok((mut gun, mut holder)) = guns.get_mut(part) {
+                        magazines.push((part, remote.weapon, magazine_out));
                         holder.weapon = remote.weapon;
                         holder.sight = remote.sight;
                         gun.translation = GUN_REST + Vec3::new(0.0, -0.12, 0.1) * remote.reload_pose;
@@ -470,6 +487,16 @@ fn interpolate(
                 }
             }
         }
+    }
+    for (part, mut transform, mut visibility) in &mut gun_parts {
+        if part.kind != PartKind::Magazine {
+            continue;
+        }
+        let Some(&(_, _, out)) = magazines.iter().find(|(gun, weapon, _)| *gun == part.holder && *weapon == part.weapon)
+        else {
+            continue;
+        };
+        part.pose_magazine(&mut transform, &mut visibility, out);
     }
 }
 

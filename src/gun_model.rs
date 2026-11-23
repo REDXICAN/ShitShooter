@@ -12,6 +12,10 @@
 //! to gun-file units) are set in the gun's file. The gun's `IronSight...` nodes
 //! are hidden under a sight, and aiming lines up the sight's `AimPoint` node
 //! with the crosshair.
+//!
+//! The nodes that move in a reload (see `PartKind`) are found and marked with
+//! a `GunPart`, which moves them in the holder's space, whatever the units
+//! and axes of the file.
 
 use std::f32::consts::PI;
 
@@ -107,6 +111,67 @@ struct GunModel {
     irons: Vec<Entity>,
 }
 
+/// A node of a gun model that moves when reloading and firing, found by name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PartKind {
+    /// Drops out and is put back in. Its origin is the top of the magazine.
+    Magazine,
+    /// The pistol's slide and a rifle's bolt: back on a shot, held back when
+    /// empty, forward at the end of the reload.
+    Slide,
+    Bolt,
+    /// The shotgun's pump, worked after each shot and after loading it empty.
+    Pump,
+    /// A shotgun shell, hidden inside the receiver until it is loaded.
+    Shell,
+}
+
+const PART_NAMES: [(&str, PartKind); 5] = [
+    ("Magazine", PartKind::Magazine),
+    ("Slide", PartKind::Slide),
+    ("Bolt", PartKind::Bolt),
+    ("Pump", PartKind::Pump),
+    ("Shell", PartKind::Shell),
+];
+
+/// Marks a moving node of a gun model (see `PartKind`).
+#[derive(Component)]
+pub struct GunPart {
+    pub kind: PartKind,
+    /// The holder the gun is in, and whose model it is.
+    pub holder: Entity,
+    pub weapon: WeaponId,
+    /// Where it is in the file.
+    rest: Transform,
+    /// Takes a direction in the holder's space to its parent's space.
+    to_parent: Mat3,
+}
+
+impl GunPart {
+    /// Puts the part `offset` away from where it rests, and turned by `angle`
+    /// about `axis` round its own origin. Both are in the holder's space,
+    /// where the barrel points along -Z and up is +Y.
+    pub fn pose(&self, transform: &mut Transform, offset: Vec3, axis: Vec3, angle: f32) {
+        let translation = self.rest.translation + self.to_parent * offset;
+        let turn = Quat::from_axis_angle((self.to_parent * axis).normalize_or(Vec3::X), angle);
+        let rotation = turn * self.rest.rotation;
+        if transform.translation != translation || transform.rotation != rotation {
+            transform.translation = translation;
+            transform.rotation = rotation;
+        }
+    }
+}
+
+impl GunPart {
+    /// A magazine `out` of the way: 0 in place, 1 dropped down and away from
+    /// the gun and tipped (and hidden: gone, or not yet brought up).
+    pub fn pose_magazine(&self, transform: &mut Transform, visibility: &mut Mut<Visibility>, out: f32) {
+        let length = weapon(self.weapon).size[2];
+        self.pose(transform, Vec3::new(0.0, -0.6, 0.12) * length * out, Vec3::X, 0.45 * out);
+        visibility.set_if_neq(if out < 0.98 { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
+
 const SIGHT_MOUNT: &str = "SightMount";
 const AIM_POINT: &str = "AimPoint";
 const IRON_SIGHT_PREFIX: &str = "IronSight";
@@ -156,13 +221,15 @@ fn fit_models(
     mut commands: Commands,
     scenes: Res<ModelScenes>,
     mut fitted: ResMut<FittedModels>,
-    mut models: Query<(&mut GunModel, &mut Transform, &Children)>,
+    mut models: Query<(&mut GunModel, &mut Transform, &Children, &ChildOf)>,
     descendants: Query<&Children>,
     globals: Query<&GlobalTransform>,
     meshes: Query<(&GlobalTransform, Option<&Aabb>), With<Mesh3d>>,
     names: Query<&Name>,
+    parents: Query<&ChildOf>,
+    locals: Query<&Transform, Without<GunModel>>,
 ) {
-    for (mut model, mut transform, children) in &mut models {
+    for (mut model, mut transform, children, parent) in &mut models {
         if model.fitted {
             continue;
         }
@@ -218,6 +285,35 @@ fn fit_models(
         transform.scale = Vec3::splat(scale);
         transform.translation = -(turn * ((low + high) / 2.0 * scale));
         model.fitted = true;
+        // The moving parts, and how the holder's space maps to their parents'.
+        let holder = parent.parent();
+        for entity in descendants.iter_descendants(scene) {
+            let Some(kind) = names
+                .get(entity)
+                .ok()
+                .and_then(|name| PART_NAMES.iter().find(|(part, _)| name.as_str() == *part).map(|(_, kind)| *kind))
+            else {
+                continue;
+            };
+            let (Ok(rest), Some(parent_global)) = (
+                locals.get(entity),
+                parents.get(entity).ok().and_then(|of| globals.get(of.parent()).ok()),
+            ) else {
+                continue;
+            };
+            let parent_in_holder = transform.compute_affine() * to_scene * parent_global.affine();
+            commands.entity(entity).insert((
+                GunPart {
+                    kind,
+                    holder,
+                    weapon: model.weapon,
+                    rest: *rest,
+                    to_parent: Mat3::from(parent_in_holder.matrix3).inverse(),
+                },
+                // The shell only shows while it is being loaded.
+                if kind == PartKind::Shell { Visibility::Hidden } else { Visibility::Inherited },
+            ));
+        }
         fitted.0[model.weapon as usize] = Some(Fitted {
             size: size * scale,
             aim_points: [None; SIGHTS.len()],

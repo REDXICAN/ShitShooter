@@ -62,8 +62,18 @@ pub enum Sound {
     Footstep,
     /// Hitting the ground after a jump or fall.
     Land,
-    /// The clack of a magazine going out or in.
+    /// The clack of a weapon being taken out.
     Reload,
+    /// A magazine released and sliding out.
+    MagOut,
+    /// A magazine pushed in until it latches.
+    MagIn,
+    /// A bolt or slide snapping forward at the end of a reload.
+    Bolt,
+    /// A shell pushed into a shotgun's tube.
+    ShellIn,
+    /// A shotgun's pump racked back and forth.
+    Pump,
     /// The click of a grenade's pin being pulled.
     Pin,
     /// The swish of a grenade being thrown.
@@ -117,6 +127,11 @@ struct Sounds {
     beep: Handle<AudioSource>,
     blip: Handle<AudioSource>,
     click: Handle<AudioSource>,
+    mag_out: Handle<AudioSource>,
+    mag_in: Handle<AudioSource>,
+    bolt: Handle<AudioSource>,
+    shell_in: Handle<AudioSource>,
+    pump: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
     rng: u32,
 }
@@ -142,6 +157,11 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         beep: add(synth_beep()),
         blip: add(synth_blip()),
         click: add(synth_click()),
+        mag_out: add(synth_mag_out()),
+        mag_in: add(synth_mag_in()),
+        bolt: add(synth_bolt()),
+        shell_in: add(synth_shell_in()),
+        pump: add(synth_pump()),
         rng: 0x2545_f491,
     });
 }
@@ -188,6 +208,11 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Sound::Go => (sounds.beep.clone(), 0.7, 2.0),
             Sound::Ping => (sounds.blip.clone(), 0.5, 1.0),
             Sound::Choke => (sounds.click.clone(), 0.3, 1.0),
+            Sound::MagOut => (sounds.mag_out.clone(), 0.55, 0.95 + random * 0.1),
+            Sound::MagIn => (sounds.mag_in.clone(), 0.6, 0.95 + random * 0.1),
+            Sound::Bolt => (sounds.bolt.clone(), 0.6, 0.96 + random * 0.08),
+            Sound::ShellIn => (sounds.shell_in.clone(), 0.5, 0.92 + random * 0.16),
+            Sound::Pump => (sounds.pump.clone(), 0.75, 0.97 + random * 0.06),
         };
         let settings = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(volume))
@@ -332,6 +357,79 @@ fn synth_tick() -> Vec<f32> {
     samples(0.05, |t| {
         let tone = (TAU * 2400.0 * t).sin() + 0.5 * (TAU * 3600.0 * t).sin();
         tone * (-t * 90.0).exp() * (t * 2000.0).min(1.0) * 0.6
+    })
+}
+
+/// A metal knock: a decaying burst of filtered noise with a ring at
+/// `frequency`, starting `at` seconds in. The building block of the reload
+/// sounds.
+fn knock(t: f32, at: f32, decay: f32, frequency: f32, noise: f32) -> f32 {
+    if t < at {
+        return 0.0;
+    }
+    let since = t - at;
+    let envelope = (-since * decay).exp() * (since * 4000.0).min(1.0);
+    (noise * 1.3 + (TAU * frequency * since).sin() * 0.6) * envelope
+}
+
+/// A magazine released: the catch clicks, then it scrapes out of the well.
+fn synth_mag_out() -> Vec<f32> {
+    let mut rng = 0x3a6_0001;
+    let mut low_passed = 0.0;
+    samples(0.2, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.25;
+        let scrape = low_passed * (t * 40.0).min(1.0) * (-(t - 0.02).max(0.0) * 18.0).exp() * 0.8;
+        ((knock(t, 0.0, 220.0, 2300.0, noise) + scrape) * 1.4).tanh() * 0.8
+    })
+}
+
+/// A magazine pushed home: a dull thud, then the catch latching.
+fn synth_mag_in() -> Vec<f32> {
+    let mut rng = 0x3a6_0002;
+    let mut low_passed = 0.0;
+    samples(0.16, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.18;
+        let thud = knock(t, 0.0, 70.0, 180.0, low_passed * 2.0);
+        let latch = knock(t, 0.055, 260.0, 2600.0, noise);
+        ((thud + latch * 0.8) * 1.5).tanh() * 0.85
+    })
+}
+
+/// A bolt or slide let go: a sharp metal slam with a bright ring.
+fn synth_bolt() -> Vec<f32> {
+    let mut rng = 0x3a6_0003;
+    samples(0.18, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        let slam = knock(t, 0.0, 120.0, 1700.0, noise) + knock(t, 0.012, 60.0, 3100.0, 0.0) * 0.5;
+        (slam * 1.6).tanh() * 0.85
+    })
+}
+
+/// A shell thumbed into the tube: a short, soft knock.
+fn synth_shell_in() -> Vec<f32> {
+    let mut rng = 0x3a6_0004;
+    let mut low_passed = 0.0;
+    samples(0.1, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.3;
+        let push = knock(t, 0.0, 140.0, 900.0, low_passed * 1.5) + knock(t, 0.03, 200.0, 1500.0, noise) * 0.6;
+        (push * 1.5).tanh() * 0.75
+    })
+}
+
+/// A pump racked: back with a scrape and a clack, then forward with a heavier one.
+fn synth_pump() -> Vec<f32> {
+    let mut rng = 0x3a6_0005;
+    let mut low_passed = 0.0;
+    samples(0.32, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let slide = |from: f32, to: f32| if (from..to).contains(&t) { low_passed * 0.5 } else { 0.0 };
+        let back = knock(t, 0.09, 110.0, 1300.0, noise) + slide(0.0, 0.09);
+        let forward = knock(t, 0.22, 90.0, 900.0, noise) + slide(0.14, 0.22);
+        ((back + forward * 1.2) * 1.5).tanh() * 0.9
     })
 }
 
@@ -603,6 +701,11 @@ mod tests {
             synth_hiss(),
             synth_ring(),
             synth_click(),
+            synth_mag_out(),
+            synth_mag_in(),
+            synth_bolt(),
+            synth_shell_in(),
+            synth_pump(),
         ];
         all.extend((0..4).map(synth_footstep));
         for sound in all {

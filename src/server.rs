@@ -1516,7 +1516,15 @@ fn bot_fight(id: PlayerId, player: &mut Player, bot: &mut Bot, enemy: Option<Vec
         bot.reload -= dt;
         if bot.reload <= 0.0 {
             bot.reload = 0.0;
-            bot.ammo = stats.magazine;
+            if stats.reload_per_round {
+                // Round by round until it is full, unless there is someone to shoot.
+                bot.ammo += 1;
+                if bot.ammo < stats.magazine && enemy.is_none() {
+                    bot.reload = stats.reload;
+                }
+            } else {
+                bot.ammo = stats.magazine;
+            }
         }
     } else if bot.ammo == 0 || (enemy.is_none() && bot.ammo < stats.magazine) {
         // Empty, or a quiet moment to top up.
@@ -1625,6 +1633,35 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bots_load_a_shotgun_shell_by_shell() {
+        let server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        let mut player = server.new_player("Loader".into(), None);
+        let mut bot = Bot::new();
+        bot.gun = weapons::SHOTGUN;
+        let stats = weapon(weapons::SHOTGUN);
+        let mut rng = 1;
+        let dt = 0.01;
+        let mut loading_for = 0.0;
+        // Empty: it starts loading, one shell per `reload` seconds, until full.
+        loop {
+            bot_fight(1, &mut player, &mut bot, None, &mut rng, dt);
+            if bot.reload <= 0.0 {
+                break;
+            }
+            loading_for += dt;
+            let loaded = (loading_for / stats.reload) as u32;
+            assert!(bot.ammo.abs_diff(loaded) <= 1, "{} shells after {loading_for:.2} s", bot.ammo);
+            assert!(loading_for < 10.0, "never done");
+        }
+        assert_eq!(bot.ammo, stats.magazine);
+        assert!((loading_for - stats.reload * stats.magazine as f32).abs() < 0.1, "{loading_for}");
+    }
 
     #[test]
     fn bots_fight_each_other() {

@@ -14,7 +14,11 @@ pub struct Weapon {
     /// Bullets per shot.
     pub pellets: usize,
     pub magazine: u32,
+    /// Seconds to reload: the whole magazine, or one round for a gun that
+    /// loads `reload_per_round`.
     pub reload: f32,
+    /// Loads one round at a time until it is full, or until it is fired.
+    pub reload_per_round: bool,
     /// Bullet speed in m/s.
     pub speed: f32,
     /// How fast the bullet drops (m/s²).
@@ -161,6 +165,7 @@ pub const WEAPONS: [Weapon; 6] = [
         pellets: 1,
         magazine: 30,
         reload: 1.6,
+        reload_per_round: false,
         speed: 200.0,
         gravity: 4.0,
         hip_spread: 0.014,
@@ -188,6 +193,7 @@ pub const WEAPONS: [Weapon; 6] = [
         pellets: 1,
         magazine: 36,
         reload: 1.3,
+        reload_per_round: false,
         speed: 150.0,
         gravity: 5.0,
         hip_spread: 0.024,
@@ -214,7 +220,8 @@ pub const WEAPONS: [Weapon; 6] = [
         auto: false,
         pellets: 9,
         magazine: 6,
-        reload: 2.2,
+        reload: 0.4,
+        reload_per_round: true,
         speed: 130.0,
         gravity: 6.0,
         hip_spread: 0.06,
@@ -245,6 +252,7 @@ pub const WEAPONS: [Weapon; 6] = [
         pellets: 1,
         magazine: 5,
         reload: 2.4,
+        reload_per_round: false,
         speed: 400.0,
         gravity: 3.0,
         hip_spread: 0.05,
@@ -272,6 +280,7 @@ pub const WEAPONS: [Weapon; 6] = [
         pellets: 1,
         magazine: 12,
         reload: 1.1,
+        reload_per_round: false,
         speed: 170.0,
         gravity: 5.0,
         hip_spread: 0.012,
@@ -299,6 +308,7 @@ pub const WEAPONS: [Weapon; 6] = [
         pellets: 0,
         magazine: 0,
         reload: 0.0,
+        reload_per_round: false,
         speed: 0.0,
         gravity: 0.0,
         hip_spread: 0.0,
