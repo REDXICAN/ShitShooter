@@ -15,7 +15,7 @@ trees, and a new mode, Conquest, played on capture points.
 3. [x] The map, "Valley": terrain, roads, creek, five flag sites, two team
    bases, scattered trees and rocks; drawn with a vertex-coloured terrain
    mesh, a daylight sky and fog.
-4. [ ] Conquest mode: five flags, tickets (a death costs one, holding more
+4. [x] Conquest mode: five flags, tickets (a death costs one, holding more
    flags bleeds the enemy), spawning at your base or flags you hold; bots
    path-find to flags (`src/nav.rs`); HUD flag row, capture bar and flag
    markers. Small maps get three flags too.
@@ -33,9 +33,18 @@ Done so far, worth knowing:
   `src/props.rs`. The selftest plays on Valley with `--map depot` (it
   presses "next map" once); add `--port` if 7777 is busy.
 
+- Conquest: `src/conquest.rs` (client), `update_conquest` and
+  `conquest_spawn_group` in `src/server.rs`. Bots path-find with `src/nav.rs`
+  (0.5 m cells over `map.bounds`, built when the server picks the map, about
+  12 ms for Valley). The selftest in conquest ends standing on a flag
+  (`flag.png`).
+
 Decided (first guesses, tuned in play): flags capture in 10 s for one
 player, faster with more (up to 3); 250 tickets a team; holding more flags
 bleeds the other team 0.25 tickets a second per flag of difference.
+All five flags start neutral; you spawn at your base or a flag your team
+holds, mostly the one nearest a flag still to take, never one with an
+enemy on it.
 
 ---
 

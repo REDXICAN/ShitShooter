@@ -1770,6 +1770,14 @@ fn top_bar(session: &Session) -> TopBar {
     }
     let mine = session.team_of(session.my_id) as usize;
     let mut info = format!("first to {}", session.score_limit);
+    if session.mode == MODE_CONQUEST {
+        let held = |team: usize| session.flags.iter().filter(|f| f.owner == Some(team as u8)).count();
+        info = match held(mine).cmp(&held(mine ^ 1)) {
+            std::cmp::Ordering::Less => "tickets   |   fewer flags: your team is bleeding".to_string(),
+            std::cmp::Ordering::Greater => "tickets   |   more flags: the enemy is bleeding".to_string(),
+            std::cmp::Ordering::Equal => "tickets   |   hold more flags to bleed the enemy".to_string(),
+        };
+    }
     if session.mode == MODE_HILL {
         info.push_str(match session.hill {
             HILL_EMPTY => "   |   hill: empty",

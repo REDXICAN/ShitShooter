@@ -12,7 +12,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use bevy::math::{Vec2, Vec3};
 
 use crate::{
-    map::{Block, FlagPoint, Look, Map, PLAYER_HALF, Road, Spawn},
+    map::{Block, FlagPoint, Look, Map, PLAYER_HALF, Road, Spawn, spawn_ring},
     props::*,
     terrain::{Terrain, fractal},
 };
@@ -305,8 +305,7 @@ pub fn valley() -> Map {
     for (name, x, z) in FLAGS {
         let pos = Vec3::new(x, map.ground(x, z).unwrap_or(0.0), z);
         let spawns = spawn_ring(&map, Vec2::new(x, z), 7.0, 16.0, 8);
-        let _ = name;
-        flags.push(FlagPoint { pos, spawns });
+        flags.push(FlagPoint { name, pos, radius: 11.0, spawns });
     }
     for (team, (x, z)) in BASES.iter().enumerate() {
         map.bases[team] = spawn_ring(&map, Vec2::new(*x + if team == 0 { 6.0 } else { -6.0 }, *z), 2.0, 14.0, 12);
@@ -334,33 +333,6 @@ pub fn valley() -> Map {
     map.armor_spots.push(Map::prop_point(CHAPEL, "belfry", chapel, cyaw));
     map.flags = flags;
     map
-}
-
-/// Up to `count` places to spawn between `inner` and `outer` metres from
-/// `center`, facing the middle of the map.
-fn spawn_ring(map: &Map, center: Vec2, inner: f32, outer: f32, count: usize) -> Vec<Spawn> {
-    let mut spawns: Vec<Spawn> = Vec::new();
-    let rings = 4;
-    for ring in 0..rings {
-        let radius = inner + (outer - inner) * ring as f32 / (rings - 1) as f32;
-        for i in 0..12 {
-            if spawns.len() >= count {
-                return spawns;
-            }
-            let angle = (i as f32 + ring as f32 * 0.5) * PI / 6.0;
-            let at = center + Vec2::from_angle(angle) * radius;
-            let feet = Vec3::new(at.x, map.ground(at.x, at.y).unwrap_or(0.0), at.y);
-            let pos = feet + Vec3::Y * (PLAYER_HALF.y + 0.05);
-            let crowded = spawns.iter().any(|other| other.pos.distance(pos) < 3.0);
-            if !crowded && map.is_free(pos, PLAYER_HALF) && map.is_free(pos + Vec3::Y * 0.5, PLAYER_HALF) {
-                spawns.push(Spawn {
-                    pos,
-                    yaw: at.x.atan2(at.y),
-                });
-            }
-        }
-    }
-    spawns
 }
 
 /// The rolling ground before roads and sites are levelled into it.
@@ -771,7 +743,7 @@ mod tests {
         let map = valley();
         assert_eq!(map.flags.len(), 5);
         for flag in &map.flags {
-            assert!(flag.spawns.len() >= 6, "flag at {} has {} spawns", flag.pos, flag.spawns.len());
+            assert!(flag.spawns.len() >= 6, "flag {} has {} spawns", flag.name, flag.spawns.len());
         }
         for (team, base) in map.bases.iter().enumerate() {
             assert!(base.len() >= 10, "base {team} has {} spawns", base.len());

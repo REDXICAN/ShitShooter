@@ -53,6 +53,15 @@ fn build_scenery(
         commands.entity(entity).despawn();
     }
     let map = &map.0;
+    for prop in &map.props {
+        commands.spawn((
+            Scenery,
+            WorldAssetRoot(models.0[prop.model].clone()),
+            Transform::from_translation(prop.pos)
+                .with_rotation(Quat::from_rotation_y(prop.yaw))
+                .with_scale(Vec3::splat(prop.scale)),
+        ));
+    }
     let Some(terrain) = &map.terrain else {
         return;
     };
@@ -114,16 +123,6 @@ fn build_scenery(
             h
         }, None);
         commands.spawn((Scenery, Mesh3d(meshes.add(mesh)), MeshMaterial3d(water.clone()), NotShadowCaster));
-    }
-
-    for prop in &map.props {
-        commands.spawn((
-            Scenery,
-            WorldAssetRoot(models.0[prop.model].clone()),
-            Transform::from_translation(prop.pos)
-                .with_rotation(Quat::from_rotation_y(prop.yaw))
-                .with_scale(Vec3::splat(prop.scale)),
-        ));
     }
 }
 

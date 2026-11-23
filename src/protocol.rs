@@ -60,11 +60,26 @@ pub const MODE_TEAMS: u8 = 1;
 /// King of the hill: a team scores a point for every second it alone holds
 /// the zone in the middle of the map.
 pub const MODE_HILL: u8 = 2;
-pub const MODE_NAMES: [&str; 3] = ["Free for all", "Team deathmatch", "King of the hill"];
+/// Conquest: each team has tickets. Every death costs one, and the team
+/// holding fewer of the map's flags bleeds them. Out of tickets, you lose.
+pub const MODE_CONQUEST: u8 = 3;
+pub const MODE_NAMES: [&str; 4] = ["Free for all", "Team deathmatch", "King of the hill", "Conquest"];
 /// The hill is everything within this distance of the map's hill point,
 /// measured along the ground (so any height counts).
 pub const HILL_RADIUS: f32 = 7.0;
 pub const HILL_SCORE_LIMIT: u32 = 100;
+/// Tickets each team starts a conquest match with.
+pub const CONQUEST_TICKETS: u32 = 200;
+/// Seconds for one player to take a neutral flag (or to neutralize an
+/// enemy one). More players take it faster, up to `CAPTURE_CROWD` times.
+pub const CAPTURE_TIME: f32 = 10.0;
+pub const CAPTURE_CROWD: i32 = 3;
+/// Tickets a second the team holding fewer flags loses, for each flag the
+/// other team holds more.
+pub const TICKET_BLEED: f32 = 0.25;
+/// A player counts as on a flag within its radius along the ground and this
+/// far above or below its foot.
+pub const FLAG_HEIGHT: f32 = 8.0;
 
 /// Values of `Snapshot::hill`.
 pub const HILL_EMPTY: u8 = 0;
@@ -82,6 +97,7 @@ pub fn score_limit(mode: u8, frag_limit: u32) -> u32 {
     match mode {
         MODE_TEAMS => frag_limit * 2,
         MODE_HILL => HILL_SCORE_LIMIT,
+        MODE_CONQUEST => CONQUEST_TICKETS,
         _ => frag_limit,
     }
 }
@@ -167,7 +183,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-11:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-12:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -378,12 +394,30 @@ pub struct PlayerSnap {
     pub alive: bool,
 }
 
+/// One conquest flag, as the snapshot tells it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct FlagSnap {
+    /// The team holding it, if any.
+    pub owner: Option<u8>,
+    /// Who it is leaning to, -100 (all team 0's) to 100 (all team 1's).
+    pub control: i8,
+}
+
+impl FlagSnap {
+    /// -1 (team 0's) to 1 (team 1's).
+    pub fn control(&self) -> f32 {
+        self.control as f32 / 100.0
+    }
+}
+
 /// Server -> client, unreliable, `SNAPSHOT_RATE` times per second during a match.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Snapshot {
     pub time_left: f32,
-    /// Team modes: each team's score.
+    /// Team modes: each team's score (conquest: tickets left).
     pub team_scores: [u32; 2],
+    /// Conquest: the map's flags, in order.
+    pub flags: Vec<FlagSnap>,
     /// King of the hill: who holds the hill (`HILL_*`).
     pub hill: u8,
     /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.

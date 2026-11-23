@@ -119,10 +119,22 @@ pub struct Road {
 
 /// A capture point in conquest.
 pub struct FlagPoint {
+    /// "A", "B"...
+    pub name: char,
     /// The foot of the flagpole, on the ground.
     pub pos: Vec3,
+    /// Players within this distance (along the ground) are on the point.
+    pub radius: f32,
     /// Where its holders come back in.
     pub spawns: Vec<Spawn>,
+}
+
+impl FlagPoint {
+    /// True if a player whose box is centred at `center` is on the flag.
+    pub fn holds(&self, center: Vec3) -> bool {
+        (center - self.pos).with_y(0.0).length() < self.radius
+            && (center.y - PLAYER_HALF.y - self.pos.y).abs() < crate::protocol::FLAG_HEIGHT
+    }
 }
 
 /// How a map is lit and what is around it.
@@ -302,6 +314,11 @@ impl Map {
         self.props.push(Prop { model, pos, yaw, scale });
     }
 
+    /// Stands a model on the map for show only: nothing collides with it.
+    pub fn add_decor(&mut self, model: usize, pos: Vec3, yaw: f32, scale: f32) {
+        self.props.push(Prop { model, pos, yaw, scale });
+    }
+
     /// Where a point marked on a model (see `PropModel::points`) is once the
     /// model stands at `pos`, turned by `yaw`.
     pub fn prop_point(model: usize, name: &str, pos: Vec3, yaw: f32) -> Vec3 {
@@ -416,14 +433,15 @@ impl Map {
         let mut armor_spots = vec![Vec3::new(0.0, 4.0, 0.0)];
         armor_spots.extend(CARDINALS.map(|(dx, dz)| Vec3::new(dx, 0.0, dz) * 29.75 + Vec3::Y * 5.0));
 
-        Map {
+        let map = Map {
             blocks,
             pads,
             spawns,
             armor_spots,
             ..Map::empty(0)
-        }
-        .finish()
+        };
+        // Conquest: a flag at each end and one under the tower.
+        with_flags(map, &[('A', -21.5, 0.0), ('B', 0.0, 6.5), ('C', 21.5, 0.0)], 7.0)
     }
 
     /// A cluttered freight yard: containers, crates and barriers everywhere, so
@@ -507,14 +525,15 @@ impl Map {
         let mut armor_spots = vec![Vec3::new(0.0, 3.4, 0.0)];
         armor_spots.extend(QUADRANTS.map(|(sx, sz)| Vec3::new(18.0 * sx, 2.4, 14.5 * sz)));
 
-        Map {
+        let map = Map {
             blocks,
             pads,
             spawns,
             armor_spots,
             ..Map::empty(1)
-        }
-        .finish()
+        };
+        // Conquest: a flag in each lane and one in the bunker.
+        with_flags(map, &[('A', -17.5, 0.0), ('B', 0.0, 2.5), ('C', 17.5, 0.0)], 7.0)
     }
 
     /// Moves a box with half extents `half` by `vel * dt`, sliding along blocks
@@ -842,6 +861,58 @@ pub fn minmax(a: f32, b: f32) -> (f32, f32) {
     (a.min(b), a.max(b))
 }
 
+/// Finishes one of the small maps, with conquest flags (name, x, z) on the
+/// floor, each with its pole (to look at: the arenas are tight enough), and
+/// the spawns either side of x = 0 as the teams' bases.
+fn with_flags(map: Map, flags: &[(char, f32, f32)], radius: f32) -> Map {
+    let mut map = map.finish();
+    for &(_, x, z) in flags {
+        map.add_decor(crate::props::FLAGPOLE, Vec3::new(x, 0.0, z), 0.0, 1.0);
+    }
+    map.flags = flags
+        .iter()
+        .map(|&(name, x, z)| FlagPoint {
+            name,
+            pos: Vec3::new(x, 0.0, z),
+            radius,
+            spawns: spawn_ring(&map, Vec2::new(x, z), 3.5, radius, 4),
+        })
+        .collect();
+    for (team, west) in [(0, true), (1, false)] {
+        map.bases[team] = map
+            .spawns
+            .iter()
+            .filter(|spawn| (spawn.pos.x < 0.0) == west)
+            .map(|spawn| Spawn { pos: spawn.pos, yaw: spawn.yaw })
+            .collect();
+    }
+    map
+}
+
+/// Up to `count` places to spawn between `inner` and `outer` metres from
+/// `center`, on the ground or floor, facing the middle of the map.
+pub fn spawn_ring(map: &Map, center: Vec2, inner: f32, outer: f32, count: usize) -> Vec<Spawn> {
+    let mut spawns: Vec<Spawn> = Vec::new();
+    let rings = 4;
+    for ring in 0..rings {
+        let radius = inner + (outer - inner) * ring as f32 / (rings - 1) as f32;
+        for i in 0..12 {
+            if spawns.len() >= count {
+                return spawns;
+            }
+            let angle = (i as f32 + ring as f32 * 0.5) * std::f32::consts::PI / 6.0;
+            let at = center + Vec2::from_angle(angle) * radius;
+            let feet = Vec3::new(at.x, map.ground(at.x, at.y).unwrap_or(0.0), at.y);
+            let pos = feet + Vec3::Y * (PLAYER_HALF.y + 0.05);
+            let crowded = spawns.iter().any(|other| other.pos.distance(pos) < 3.0);
+            if !crowded && map.is_free(pos, PLAYER_HALF) && map.is_free(pos + Vec3::Y * 0.5, PLAYER_HALF) {
+                spawns.push(spawn_facing_center(feet));
+            }
+        }
+    }
+    spawns
+}
+
 /// `feet` is a point on the ground; the spawn is the box centre standing there.
 pub fn spawn_facing_center(feet: Vec3) -> Spawn {
     Spawn {
@@ -917,6 +988,23 @@ mod tests {
                 assert!(map.is_free(standing, PLAYER_HALF), "map {} armor at {spot} is inside a block", map.id);
                 assert!(!map.is_free(*spot - Vec3::Y * 0.05, Vec3::splat(0.04)), "map {} armor at {spot} floats", map.id);
                 assert!(touches_pickup(*spot, *spot));
+            }
+        }
+    }
+
+    #[test]
+    fn every_map_has_flags_and_bases_for_conquest() {
+        for map in maps() {
+            assert!(map.flags.len() >= 3, "map {}", map.id);
+            for flag in &map.flags {
+                assert!(flag.spawns.len() >= 3, "map {} flag {} has {} spawns", map.id, flag.name, flag.spawns.len());
+                for spawn in &flag.spawns {
+                    assert!(map.is_free(spawn.pos, PLAYER_HALF));
+                    assert!(flag.holds(spawn.pos) || flag.radius > 8.0, "map {} flag {}: spawn off the flag", map.id, flag.name);
+                }
+            }
+            for base in &map.bases {
+                assert!(base.len() >= 4, "map {}", map.id);
             }
         }
     }

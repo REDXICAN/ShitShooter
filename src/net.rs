@@ -70,6 +70,8 @@ pub struct Session {
     pub team_scores: [u32; 2],
     /// Who holds the hill (`HILL_*`).
     pub hill: u8,
+    /// Conquest: each of the map's flags.
+    pub flags: Vec<FlagSnap>,
     /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
     pub armor_taken: u32,
     pub time_left: f32,
@@ -358,6 +360,7 @@ fn update_session(
                 session.score_limit = *score_limit;
                 session.team_scores = [0, 0];
                 session.hill = HILL_EMPTY;
+                session.flags.clear();
                 session.armor_taken = 0;
                 session.time_left = *time_left;
                 next_state.set(AppState::Playing);
@@ -391,6 +394,7 @@ fn update_session(
         session.time_left = snapshot.time_left;
         session.team_scores = snapshot.team_scores;
         session.hill = snapshot.hill;
+        session.flags.clone_from(&snapshot.flags);
         session.armor_taken = snapshot.armor_taken;
     }
 }

@@ -18,7 +18,7 @@ use crate::{
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
     player::{Controls, DroppedMagazine, GunSlot, LocalPlayer, PlayerSystems},
-    protocol::ClientMsg,
+    protocol::{ClientMsg, MODE_CONQUEST},
     map::PLAYER_HALF,
     loadout::{LoadoutArrow, Slot},
     remote::{Corpse, RemotePlayer},
@@ -355,10 +355,22 @@ fn selftest_play(
     let t = test.clock;
     test.top_speed = test.top_speed.max(player.horizontal_speed());
 
-    keys.press(KeyCode::KeyW);
-    keys.press(KeyCode::KeyD);
+    // Standing still on a conquest flag, at the end.
+    let on_flag = session.mode == MODE_CONQUEST && test.step >= 14;
+    if on_flag {
+        keys.release(KeyCode::KeyW);
+        keys.release(KeyCode::KeyD);
+        if let Some(flag) = map.0.flags.iter().find(|flag| flag.holds(player.pos)) {
+            let to = flag.pos + Vec3::Y * 6.0 - player.eye();
+            player.yaw = (-to.x).atan2(-to.z);
+            player.pitch = to.y.atan2(to.with_y(0.0).length());
+        }
+    } else {
+        keys.press(KeyCode::KeyW);
+        keys.press(KeyCode::KeyD);
+    }
     // Run for a while, then bunny hop, so both footsteps and landings happen.
-    if t > 3.5 {
+    if t > 3.5 && !on_flag {
         keys.press(KeyCode::Space);
     } else {
         keys.release(KeyCode::Space);
@@ -374,7 +386,7 @@ fn selftest_play(
     let grenade_click = [1.0..1.2, 1.45..1.5, 1.6..2.0, 2.05..2.1].iter().any(|window| window.contains(&t));
     // Near the end, the shotgun is aimed and held there until it is choked.
     let shotgun_aim = (9.3..10.9).contains(&t);
-    if pistol_click || grenade_click || shotgun_aim {
+    if pistol_click || grenade_click || shotgun_aim || on_flag {
         mouse.release(MouseButton::Left);
     } else {
         mouse.press(MouseButton::Left);
@@ -429,7 +441,9 @@ fn selftest_play(
         .filter(|(remote, _)| remote.alive && session.enemies(session.my_id, remote.id))
         .map(|(remote, transform)| (remote.id, transform.translation))
         .min_by(|a, b| a.1.distance(eye).total_cmp(&b.1.distance(eye)));
-    if let Some((id, target)) = nearest {
+    if let Some((id, target)) = nearest
+        && !on_flag
+    {
         // Bullets take time to arrive: aim where the target will be by then.
         let velocity = match *last_target {
             Some((last_id, last_pos)) if last_id == id && time.delta_secs() > 0.0 => {
@@ -547,7 +561,26 @@ fn selftest_play(
         println!("[selftest] shotgun aim {:.2} choke {:.2} spread {:.3}", player.aim, player.choke(), player.spread());
         test.capture(&mut commands, "choke.png");
     }
-    if test.reached(13, 10.9) {
+    // Conquest: onto the nearest flag, looking at its pole, and a look once
+    // it is partly ours.
+    let conquest = session.mode == MODE_CONQUEST;
+    if test.reached(13, 10.9)
+        && conquest
+        && let Some(flag) = map.0.flags.iter().min_by(|a, b| a.pos.distance(player.pos).total_cmp(&b.pos.distance(player.pos)))
+    {
+        // From the side: the cloth hangs out towards +x.
+        let side = flag.spawns.iter().max_by(|a, b| (a.pos.z - flag.pos.z).abs().total_cmp(&(b.pos.z - flag.pos.z).abs()));
+        player.pos = side.map_or(flag.spawns[0].pos, |spawn| spawn.pos);
+        player.vel = Vec3::ZERO;
+        let to = flag.pos + Vec3::Y * 4.0 - player.eye();
+        player.yaw = (-to.x).atan2(-to.z);
+        player.pitch = to.y.atan2(to.with_y(0.0).length());
+    }
+    if test.reached(14, if conquest { 17.0 } else { 11.0 }) && conquest {
+        println!("[selftest] flags {:?}", session.flags);
+        test.capture(&mut commands, "flag.png");
+    }
+    if test.reached(15, if conquest { 17.5 } else { 11.2 }) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",

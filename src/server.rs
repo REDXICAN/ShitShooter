@@ -19,6 +19,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
+    nav::NavGrid,
     paint::Canvas,
     protocol::*,
     weapons::{self, DRAW_TIME, GUN_COUNT, IRON_SIGHTS, KNIFE, KNIFE_RANGE, SightId, WEAPONS, WeaponId, hit_damage, weapon},
@@ -85,6 +86,15 @@ struct Bot {
     vel: Vec3,
     /// It was standing on something last tick.
     grounded: bool,
+    /// The way to `goal`, waypoint by waypoint (empty: run straight at it),
+    /// and the goal it was found for.
+    path: Vec<Vec3>,
+    path_to: Option<Vec3>,
+    /// Seconds spent wanting to move but hardly moving.
+    stuck: f32,
+    /// Conquest: the flag it is going for, and seconds until it thinks again.
+    objective: Option<usize>,
+    rethink_in: f32,
     /// Where it is running to.
     goal: Vec3,
     retarget_in: f32,
@@ -115,6 +125,11 @@ impl Bot {
         Bot {
             vel: Vec3::ZERO,
             grounded: false,
+            path: Vec::new(),
+            path_to: None,
+            stuck: 0.0,
+            objective: None,
+            rethink_in: 0.0,
             goal: Vec3::ZERO,
             retarget_in: 0.0,
             gun: 0,
@@ -252,6 +267,27 @@ pub struct Server {
     hill_clock: f32,
     /// Seconds until each of the map's armor pickups is back; 0 = it is there.
     armor_respawn: Vec<f32>,
+    /// Conquest: who holds each of the map's flags, and the tickets each
+    /// team has bled that are not whole yet.
+    flags: Vec<FlagState>,
+    bleed: [f32; 2],
+    /// Where bots can walk, on this map.
+    nav: NavGrid,
+}
+
+/// A conquest flag, as the server keeps it.
+#[derive(Clone, Copy, Default)]
+struct FlagState {
+    owner: Option<u8>,
+    /// -1 (all team 0's) to 1 (all team 1's).
+    control: f32,
+}
+
+impl FlagState {
+    /// Fully held by `team`, with nothing to win back.
+    fn secure(&self, team: u8) -> bool {
+        self.owner == Some(team) && self.control * if team == 0 { -1.0 } else { 1.0 } >= 0.999
+    }
 }
 
 impl Server {
@@ -269,10 +305,14 @@ impl Server {
             authentication: ServerAuthentication::Unsecure,
         };
         let transport = NetcodeServerTransport::new(config, socket)?;
+        let map = Map::by_id(settings.map);
         let mut server = Server {
             renet: RenetServer::new(ConnectionConfig::default()),
             transport,
-            map: Map::by_id(settings.map),
+            nav: NavGrid::new(&map),
+            map,
+            flags: Vec::new(),
+            bleed: [0.0; 2],
             grenades: Vec::new(),
             smokes: Vec::new(),
             bullets: Vec::new(),
@@ -436,6 +476,9 @@ impl Server {
         if self.settings.mode == MODE_HILL && self.phase == Phase::Playing {
             self.update_hill(dt);
         }
+        if self.settings.mode == MODE_CONQUEST && self.phase == Phase::Playing {
+            self.update_conquest(dt);
+        }
         if self.phase != Phase::Playing {
             // The last explosion (or second on the hill) won the match.
             return;
@@ -471,6 +514,14 @@ impl Server {
             let snapshot = Snapshot {
                 time_left: self.time_left.max(0.0),
                 team_scores: self.team_scores,
+                flags: self
+                    .flags
+                    .iter()
+                    .map(|flag| FlagSnap {
+                        owner: flag.owner,
+                        control: (flag.control * 100.0).round() as i8,
+                    })
+                    .collect(),
                 hill: self.hill,
                 armor_taken: self
                     .armor_respawn
@@ -559,6 +610,70 @@ impl Server {
         }
     }
 
+    /// Conquest: whoever outnumbers the other team on a flag pushes it their
+    /// way: first back to neutral, then on until it is theirs. A flag left
+    /// alone drifts back to whoever held it. The team holding fewer flags
+    /// bleeds tickets.
+    fn update_conquest(&mut self, dt: f32) {
+        let mut held = [0_i32; 2];
+        let mut changes = Vec::new();
+        for (index, point) in self.map.flags.iter().enumerate() {
+            let mut present = [0_i32; 2];
+            for player in self.players.values().filter(|p| p.alive && point.holds(p.pos)) {
+                present[player.team as usize & 1] += 1;
+            }
+            let flag = &mut self.flags[index];
+            let rate = dt / CAPTURE_TIME;
+            if present == [0, 0] {
+                let rest = match flag.owner {
+                    Some(0) => -1.0,
+                    Some(_) => 1.0,
+                    None => 0.0,
+                };
+                flag.control += (rest - flag.control).clamp(-rate * 0.5, rate * 0.5);
+            } else {
+                let push = (present[1] - present[0]).clamp(-CAPTURE_CROWD, CAPTURE_CROWD) as f32;
+                flag.control = (flag.control + push * rate).clamp(-1.0, 1.0);
+            }
+            let owner = match flag.owner {
+                Some(0) if flag.control >= 0.0 => None,
+                Some(1) if flag.control <= 0.0 => None,
+                None if flag.control <= -1.0 => Some(0),
+                None if flag.control >= 1.0 => Some(1),
+                owner => owner,
+            };
+            if owner != flag.owner {
+                flag.owner = owner;
+                changes.push(index);
+            }
+            if let Some(team) = flag.owner {
+                held[team as usize & 1] += 1;
+            }
+        }
+        if !changes.is_empty() {
+            // Bots going for a flag that changed hands think again.
+            for bot in self.players.values_mut().filter_map(|p| p.bot.as_mut()) {
+                if bot.objective.is_some_and(|i| changes.contains(&i)) {
+                    bot.rethink_in = 0.0;
+                }
+            }
+        }
+        for team in 0..2 {
+            let behind = held[team ^ 1] - held[team];
+            if behind <= 0 {
+                continue;
+            }
+            self.bleed[team] += behind as f32 * TICKET_BLEED * dt;
+            let whole = self.bleed[team].floor();
+            self.bleed[team] -= whole;
+            self.team_scores[team] = self.team_scores[team].saturating_sub(whole as u32);
+            if self.team_scores[team] == 0 {
+                self.end_match(Winner::Team(team as u8 ^ 1));
+                return;
+            }
+        }
+    }
+
     fn handle_message(&mut self, id: PlayerId, msg: ClientMsg) {
         let is_leader = self.leader() == Some(id);
         match msg {
@@ -637,6 +752,7 @@ impl Server {
             ClientMsg::NextMap if is_leader && self.phase == Phase::Lobby => {
                 self.settings.map = (self.settings.map + 1) % map::MAP_NAMES.len() as u8;
                 self.map = Map::by_id(self.settings.map);
+                self.nav = NavGrid::new(&self.map);
                 self.roster_dirty = true;
             }
             ClientMsg::Fire { weapon, origin, dirs } => self.handle_fire(id, weapon, origin, dirs),
@@ -967,6 +1083,7 @@ impl Server {
         let Some(victim) = self.players.get_mut(&victim_id) else {
             return;
         };
+        let victim_team = victim.team & 1;
         // No friendly fire. Your own grenade still hurts you.
         if is_team_mode(mode) && attacker_id != victim_id && attacker_team == Some(victim.team) {
             return;
@@ -1019,6 +1136,15 @@ impl Server {
             weapon: weapon_id,
         });
         self.roster_dirty = true;
+        // In conquest every death costs the team a ticket.
+        if mode == MODE_CONQUEST {
+            let tickets = &mut self.team_scores[victim_team as usize];
+            *tickets = tickets.saturating_sub(1);
+            if *tickets == 0 {
+                self.end_match(Winner::Team(victim_team ^ 1));
+            }
+            return;
+        }
         let Some((kills, team)) = scorer else {
             return;
         };
@@ -1048,6 +1174,12 @@ impl Server {
         self.hill = HILL_EMPTY;
         self.hill_clock = 0.0;
         self.armor_respawn = vec![0.0; self.map.armor_spots.len()];
+        self.flags = Vec::new();
+        self.bleed = [0.0; 2];
+        if self.settings.mode == MODE_CONQUEST {
+            self.team_scores = [CONQUEST_TICKETS; 2];
+            self.flags = vec![FlagState::default(); self.map.flags.len()];
+        }
         for player in self.players.values_mut() {
             player.kills = 0;
             player.deaths = 0;
@@ -1103,7 +1235,8 @@ impl Server {
     }
 
     /// Spawns at one of the points farthest away from every living player (in
-    /// the team modes: from every living enemy).
+    /// the team modes: from every living enemy). In conquest, at the team's
+    /// base or one of the flags it holds.
     fn spawn_player(&mut self, id: PlayerId) {
         let team_mode = is_team_mode(self.settings.mode);
         let my_team = self.players.get(&id).map_or(0, |p| p.team);
@@ -1113,9 +1246,17 @@ impl Server {
             .filter(|(other, p)| **other != id && p.alive && !(team_mode && p.team == my_team))
             .map(|(_, p)| p.pos)
             .collect();
-        let mut ranked: Vec<(f32, usize)> = self
-            .map
-            .spawns
+        let pool = if self.settings.mode == MODE_CONQUEST {
+            let group = self.conquest_spawn_group(my_team & 1, &others);
+            match group {
+                Some(index) => &self.map.flags[index].spawns,
+                None => &self.map.bases[my_team as usize & 1],
+            }
+        } else {
+            &self.map.spawns
+        };
+        let pool = if pool.is_empty() { &self.map.spawns } else { pool };
+        let mut ranked: Vec<(f32, usize)> = pool
             .iter()
             .enumerate()
             .map(|(index, spawn)| {
@@ -1127,9 +1268,9 @@ impl Server {
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let pick = self.random() as usize % ranked.len().min(3);
-        let spawn = &self.map.spawns[ranked[pick].1];
-        let (pos, yaw) = (spawn.pos, spawn.yaw);
+        let pick = (self.rng >> 17) as usize % ranked.len().min(3);
+        let (pos, yaw) = (pool[ranked[pick].1].pos, pool[ranked[pick].1].yaw);
+        self.random();
         let bot_gun = (self.random() % GUN_COUNT as u64) as WeaponId;
 
         let Some(player) = self.players.get_mut(&id) else {
@@ -1168,6 +1309,33 @@ impl Server {
         });
     }
 
+    /// Conquest: which of the flags `team` holds to spawn at, or `None` for
+    /// its base. Mostly the one nearest a flag still to take (the front),
+    /// sometimes another, never one with an enemy on it.
+    fn conquest_spawn_group(&mut self, team: u8, enemies: &[Vec3]) -> Option<usize> {
+        let (roll, any) = (self.random() % 4, self.random() as usize);
+        let flags = &self.map.flags;
+        let ours: Vec<usize> = (0..flags.len())
+            .filter(|&i| self.flags.get(i).is_some_and(|f| f.owner == Some(team)))
+            .filter(|&i| !enemies.iter().any(|enemy| flags[i].holds(*enemy)))
+            .collect();
+        if ours.is_empty() {
+            return None;
+        }
+        if roll == 0 {
+            return None;
+        }
+        let to_take: Vec<Vec3> = (0..flags.len())
+            .filter(|&i| self.flags.get(i).is_some_and(|f| f.owner != Some(team)))
+            .map(|i| flags[i].pos)
+            .collect();
+        if roll == 1 || to_take.is_empty() {
+            return Some(ours[any % ours.len()]);
+        }
+        let front = |i: &usize| to_take.iter().map(|p| p.distance(flags[*i].pos)).fold(f32::INFINITY, f32::min);
+        ours.iter().copied().min_by(|a, b| front(a).total_cmp(&front(b)))
+    }
+
     fn add_bot(&mut self) {
         if self.players.len() >= MAX_PLAYERS {
             return;
@@ -1191,6 +1359,7 @@ impl Server {
     /// collision code as real players, and shoot at the enemies they see.
     fn update_bots(&mut self, dt: f32) {
         let team_mode = is_team_mode(self.settings.mode);
+        let conquest = self.settings.mode == MODE_CONQUEST;
         let hill = (self.settings.mode == MODE_HILL).then_some(self.map.hill);
         let bodies: Vec<Body> = self
             .players
@@ -1212,7 +1381,13 @@ impl Server {
                 continue;
             };
             let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, dt);
-            bot_move(&self.map, player, &mut bot, hill, enemy, &mut rng, dt);
+            let target = if conquest {
+                bot_objective(&self.map, &self.flags, player, &mut bot, &mut rng, dt)
+                    .map(|flag| (self.map.flags[flag].pos, self.map.flags[flag].radius * 0.7, true))
+            } else {
+                hill.map(|hill| (hill, 5.5, false))
+            };
+            bot_move(&self.map, &self.nav, player, &mut bot, target, enemy, &mut rng, dt);
             if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, &mut rng, dt) {
                 shots.push(shot);
             }
@@ -1465,13 +1640,62 @@ fn bot_pick_enemy(
     Some(target.center)
 }
 
-/// Runs towards the bot's goal, hopping over whatever is in the way. While
-/// fighting, the goals are short dashes from side to side.
-fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, enemy: Option<Vec3>, rng: &mut u64, dt: f32) {
+/// Conquest: the flag the bot is going for. It thinks again every so often,
+/// and as soon as the flag it was after is safely its team's: then it goes
+/// for one still to take, mostly the nearest, or else guards one it holds.
+fn bot_objective(map: &Map, flags: &[FlagState], player: &Player, bot: &mut Bot, rng: &mut u64, dt: f32) -> Option<usize> {
+    if flags.is_empty() {
+        return None;
+    }
+    let team = player.team & 1;
+    bot.rethink_in -= dt;
+    let done = bot.objective.is_some_and(|i| flags[i].secure(team));
+    if bot.objective.is_some() && bot.rethink_in > 0.0 && !done {
+        return bot.objective;
+    }
+    bot.rethink_in = 20.0 + random_unit(rng) * 15.0;
+    let mut to_take: Vec<usize> = (0..flags.len()).filter(|&i| !flags[i].secure(team)).collect();
+    if to_take.is_empty() {
+        bot.objective = Some(next_random(rng) as usize % flags.len());
+        return bot.objective;
+    }
+    to_take.sort_by(|a, b| {
+        let distance = |i: &usize| map.flags[*i].pos.distance(player.pos);
+        distance(a).total_cmp(&distance(b))
+    });
+    let roll = random_unit(rng);
+    let pick = if roll < 0.6 || to_take.len() == 1 {
+        0
+    } else if roll < 0.85 {
+        1
+    } else {
+        next_random(rng) as usize % to_take.len()
+    };
+    bot.objective = Some(to_take[pick]);
+    bot.objective
+}
+
+/// Runs towards the bot's goal, finding the way round buildings and the
+/// like, hopping over whatever is still in the way. While fighting, the
+/// goals are short dashes from side to side. `target` is somewhere to be
+/// (centre, radius, and whether to stay there or only drop by now and then).
+#[allow(clippy::too_many_arguments)]
+fn bot_move(
+    map: &Map,
+    nav: &NavGrid,
+    player: &mut Player,
+    bot: &mut Bot,
+    target: Option<(Vec3, f32, bool)>,
+    enemy: Option<Vec3>,
+    rng: &mut u64,
+    dt: f32,
+) {
     let speed = if enemy.is_some() { 5.5 } else { 7.0 };
     bot.retarget_in -= dt;
-    let mut to_goal = (bot.goal - player.pos).with_y(0.0);
-    if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 {
+    let to_goal = (bot.goal - player.pos).with_y(0.0);
+    // A new target (a conquest flag) takes over at once.
+    let off_target = target.is_some_and(|(center, radius, stay)| stay && (bot.goal - center).with_y(0.0).length() > radius + 0.5);
+    if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 || (enemy.is_none() && off_target) {
         if let Some(enemy) = enemy {
             let towards = (enemy - player.pos).with_y(0.0).normalize_or_zero();
             let side = Vec3::new(-towards.z, 0.0, towards.x);
@@ -1482,18 +1706,39 @@ fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, e
             let [min, max] = map.bounds;
             let x = min.x + random_unit(rng) * (max.x - min.x);
             let z = min.y + random_unit(rng) * (max.y - min.y);
-            bot.goal = match hill {
-                // On the hill half the time, so there is something to fight over.
-                Some(hill) if next_random(rng).is_multiple_of(2) => {
+            bot.goal = match target {
+                // On the hill half the time, so there is something to fight
+                // over; on a conquest flag, all the time.
+                Some((center, radius, stay)) if stay || next_random(rng).is_multiple_of(2) => {
                     let (dx, dz) = (random_unit(rng) * 2.0 - 1.0, random_unit(rng) * 2.0 - 1.0);
-                    hill + Vec3::new(dx, 0.0, dz) * 5.5
+                    center + Vec3::new(dx, 0.0, dz) * radius
                 }
                 _ => Vec3::new(x, 0.0, z),
             };
-            bot.retarget_in = 2.0 + random_unit(rng) * 3.0;
+            // Far goals take a while to reach.
+            let far = (bot.goal - player.pos).with_y(0.0).length() > 20.0;
+            bot.retarget_in = if far { 45.0 } else { 2.0 + random_unit(rng) * 3.0 };
         }
-        to_goal = (bot.goal - player.pos).with_y(0.0);
     }
+    // Follow the way to the goal while not fighting.
+    let mut steer = bot.goal;
+    if enemy.is_none() {
+        let feet = player.pos - Vec3::Y * map::PLAYER_HALF.y;
+        let goal = bot.goal.with_y(map.ground(bot.goal.x, bot.goal.z).unwrap_or(0.0));
+        if bot.path_to.is_none_or(|to| to.distance(goal) > 0.5) {
+            bot.path = nav.path(map, feet, goal).unwrap_or_default();
+            bot.path_to = Some(goal);
+        }
+        while bot.path.first().is_some_and(|next| (*next - player.pos).with_y(0.0).length() < 1.0) {
+            bot.path.remove(0);
+        }
+        if let Some(next) = bot.path.first() {
+            steer = *next;
+        }
+    } else {
+        bot.path_to = None;
+    }
+    let to_goal = (steer - player.pos).with_y(0.0);
     let wish = to_goal.normalize_or_zero() * speed;
     let blend = (8.0 * dt).min(1.0);
     bot.vel.x += (wish.x - bot.vel.x) * blend;
@@ -1520,6 +1765,17 @@ fn bot_move(map: &Map, player: &mut Player, bot: &mut Bot, hill: Option<Vec3>, e
         let blocked = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() < wanted.length() * 0.5;
         if blocked || next_random(rng).is_multiple_of(90) {
             bot.vel.y = 8.0;
+        }
+    }
+    // Getting nowhere for a while: find the way again, or give up on the goal.
+    let moving = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() > 1.0;
+    bot.stuck = if moving || wanted.length() < 0.1 { 0.0 } else { bot.stuck + dt };
+    if bot.stuck > 1.5 {
+        bot.stuck = 0.0;
+        if bot.path_to.is_some() {
+            bot.path_to = None;
+        } else {
+            bot.retarget_in = 0.0;
         }
     }
     // Not fighting: look where it is going.
@@ -1733,6 +1989,126 @@ mod tests {
         }
         let kills: u32 = server.players.values().map(|p| p.kills).sum();
         assert!(kills > 0, "bots never killed anybody");
+    }
+
+    /// A conquest match on `map` with people on the given teams.
+    fn conquest_with(map: u8, teams: &[u8]) -> Server {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode: MODE_CONQUEST,
+            map,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for (k, team) in teams.iter().enumerate() {
+            server.join_counter += 1;
+            let mut person = server.new_player(format!("P{k}"), None);
+            person.team = *team;
+            server.players.insert(1000 + k as PlayerId, person);
+        }
+        server.start_match();
+        server.countdown = 0.0;
+        server
+    }
+
+    fn stand_on_flag(server: &mut Server, id: PlayerId, flag: usize) {
+        let pos = server.map.flags[flag].spawns[0].pos;
+        server.players.get_mut(&id).unwrap().pos = pos;
+    }
+
+    #[test]
+    fn a_flag_is_taken_by_standing_on_it_and_lost_the_same_way() {
+        let mut server = conquest_with(0, &[0, 1]);
+        server.players.get_mut(&1001).unwrap().pos = Vec3::new(0.0, 100.0, 0.0);
+        stand_on_flag(&mut server, 1000, 0);
+        let tick = 1.0 / 60.0;
+        for _ in 0..(CAPTURE_TIME * 0.9 / tick) as usize {
+            server.update_conquest(tick);
+        }
+        assert_eq!(server.flags[0].owner, None, "taken too soon");
+        for _ in 0..(CAPTURE_TIME * 0.2 / tick) as usize {
+            server.update_conquest(tick);
+        }
+        assert_eq!(server.flags[0].owner, Some(0));
+        // Both on it: contested, nothing moves.
+        stand_on_flag(&mut server, 1001, 0);
+        let before = server.flags[0].control;
+        for _ in 0..120 {
+            server.update_conquest(tick);
+        }
+        assert_eq!(server.flags[0].control, before);
+        // The enemy alone neutralizes it.
+        server.players.get_mut(&1000).unwrap().pos = Vec3::new(0.0, 100.0, 0.0);
+        for _ in 0..(CAPTURE_TIME * 1.05 / tick) as usize {
+            server.update_conquest(tick);
+        }
+        assert_eq!(server.flags[0].owner, None);
+    }
+
+    #[test]
+    fn deaths_and_holding_fewer_flags_cost_tickets() {
+        let mut server = conquest_with(0, &[0, 1]);
+        assert_eq!(server.team_scores, [CONQUEST_TICKETS; 2]);
+        server.damage(1000, 1001, 500, 0);
+        assert_eq!(server.team_scores, [CONQUEST_TICKETS - 1, CONQUEST_TICKETS]);
+        // Team 1 holds two flags to none: team 0 bleeds half a ticket a second.
+        for flag in &mut server.flags[..2] {
+            *flag = FlagState { owner: Some(1), control: 1.0 };
+        }
+        for player in server.players.values_mut() {
+            player.pos = Vec3::new(0.0, 100.0, 0.0);
+        }
+        for _ in 0..60 * 4 + 6 {
+            server.update_conquest(1.0 / 60.0);
+        }
+        assert_eq!(server.team_scores, [CONQUEST_TICKETS - 3, CONQUEST_TICKETS]);
+        // Out of tickets: the match is over.
+        server.team_scores[0] = 1;
+        server.damage(1000, 1001, 500, 0);
+        assert!(server.phase == Phase::Lobby);
+    }
+
+    #[test]
+    fn conquest_spawns_are_at_the_base_or_a_flag_held() {
+        let mut server = conquest_with(2, &[0]);
+        let near = |pos: Vec3, spawns: &[map::Spawn]| spawns.iter().any(|s| s.pos.distance(pos) < 0.01);
+        for _ in 0..10 {
+            server.spawn_player(1000);
+            assert!(near(server.players[&1000].pos, &server.map.bases[0]));
+        }
+        server.flags[2] = FlagState { owner: Some(0), control: -1.0 };
+        let mut at_flag = 0;
+        for _ in 0..40 {
+            server.spawn_player(1000);
+            let pos = server.players[&1000].pos;
+            assert!(near(pos, &server.map.bases[0]) || near(pos, &server.map.flags[2].spawns));
+            at_flag += near(pos, &server.map.flags[2].spawns) as u32;
+        }
+        assert!(at_flag > 20, "only {at_flag} of 40 at the flag");
+    }
+
+    #[test]
+    fn bots_take_flags_on_the_valley() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode: MODE_CONQUEST,
+            map: 2,
+            bots: 4,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        server.start_match();
+        server.countdown = 0.0;
+        // Two minutes of play.
+        for _ in 0..60 * 120 {
+            server.update_match(1.0 / 60.0);
+            if server.phase != Phase::Playing {
+                break;
+            }
+        }
+        let taken: Vec<Option<u8>> = server.flags.iter().map(|f| f.owner).collect();
+        println!("flags after two minutes: {taken:?}, tickets {:?}", server.team_scores);
+        assert!(taken.iter().filter(|owner| owner.is_some()).count() >= 2, "{taken:?}");
     }
 
     #[test]

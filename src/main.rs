@@ -10,11 +10,13 @@
 
 mod audio;
 mod combat;
+mod conquest;
 mod devtools;
 mod grenade;
 mod gun_model;
 mod loadout;
 mod map;
+mod nav;
 mod net;
 mod paint;
 mod paint_editor;
@@ -83,7 +85,7 @@ OPTIONS:
     --server             Run a dedicated server with no window
     --port <PORT>        UDP port to host on              [default: 7777]
     --password <TEXT>    Lobby password (host and join)
-    --mode <NAME>        Game mode: ffa, teams or hill    [default: ffa]
+    --mode <NAME>        Game mode: ffa, teams, hill or conquest [default: ffa]
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
@@ -116,10 +118,10 @@ fn parse_args() -> Result<LaunchArgs, String> {
             "--bots" => args.server.bots = number(&flag, value("count")?)?,
             "--mode" => {
                 let name = value("name")?;
-                args.server.mode = ["ffa", "teams", "hill"]
+                args.server.mode = ["ffa", "teams", "hill", "conquest"]
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown mode '{name}' (try: ffa, teams, hill)"))? as u8;
+                    .ok_or_else(|| format!("unknown mode '{name}' (try: ffa, teams, hill, conquest)"))? as u8;
             }
             "--map" => {
                 let name = value("name")?;
@@ -209,7 +211,7 @@ fn main() {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
-            ping::PingPlugin,
+            (ping::PingPlugin, conquest::ConquestPlugin),
             paint::PaintPlugin,
             paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,
