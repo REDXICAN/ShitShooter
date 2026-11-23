@@ -9,7 +9,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::{
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
-    window::{CursorGrabMode, CursorOptions},
+    window::{CursorGrabMode, CursorOptions, WindowFocused},
 };
 
 use crate::{
@@ -787,6 +787,8 @@ fn grab_cursor(
     state: Res<State<AppState>>,
     controls: Res<Controls>,
     args: Res<crate::LaunchArgs>,
+    mut focus: MessageReader<WindowFocused>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut cursor: Single<&mut CursorOptions>,
 ) {
     // The scripted self-test must not steal the developer's mouse.
@@ -796,9 +798,15 @@ fn grab_cursor(
     } else {
         CursorGrabMode::None
     };
+    // Windows drops the lock when the window loses focus (alt-tab), but the component still
+    // says Locked, so Bevy never applies it again. Touching it makes Bevy grab again: on
+    // focus coming back, and on any click in case focus came back mid title-bar drag.
+    let refocused = focus.read().fold(false, |any, event| any || event.focused);
     if cursor.grab_mode != mode || cursor.visible == grab {
         cursor.grab_mode = mode;
         cursor.visible = !grab;
+    } else if grab && (refocused || mouse.get_just_pressed().next().is_some()) {
+        cursor.set_changed();
     }
 }
 
