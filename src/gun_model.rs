@@ -1,4 +1,4 @@
-//! Weapon models from `assets/models`, drawn in place of the box guns for the
+//! Weapon models from `assets/models/weapons`, drawn in place of the box guns for the
 //! weapons that have one (see `Weapon::model`).
 //!
 //! Every gun holder (the first-person gun, and each remote player's gun) gets a

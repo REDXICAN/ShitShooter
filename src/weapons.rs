@@ -164,7 +164,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.006,
         headshot: 2.0,
         model: Some(Model {
-            path: "models/M4A1.gltf",
+            path: "models/weapons/M4A1.gltf",
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX],
         }),
@@ -190,7 +190,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.007,
         headshot: 1.6,
         model: Some(Model {
-            path: "models/MP7.gltf",
+            path: "models/weapons/MP7.gltf",
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX],
         }),
@@ -216,7 +216,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.018,
         headshot: 1.5,
         model: Some(Model {
-            path: "models/Shotgun.glb",
+            path: "models/weapons/Shotgun.glb",
             barrel_plus_z: true,
             sights: &[],
         }),
@@ -242,7 +242,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.012,
         headshot: 2.5,
         model: Some(Model {
-            path: "models/SCAR.gltf",
+            path: "models/weapons/SCAR.gltf",
             barrel_plus_z: true,
             sights: &[RED_DOT, REFLEX, SCOPE],
         }),
@@ -268,7 +268,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.007,
         headshot: 2.0,
         model: Some(Model {
-            path: "models/M1911Tactical.gltf",
+            path: "models/weapons/M1911Tactical.gltf",
             barrel_plus_z: false,
             sights: &[RED_DOT, REFLEX],
         }),
@@ -295,7 +295,7 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.0,
         headshot: 1.0,
         model: Some(Model {
-            path: "models/Knife.glb",
+            path: "models/weapons/Knife.glb",
             barrel_plus_z: true,
             sights: &[],
         }),

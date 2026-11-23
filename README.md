@@ -14,7 +14,7 @@ The game is installed to `%LOCALAPPDATA%\ShitShooter`, so the launcher can live 
 
 Every push to `main` is built by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) and published as a release named `build-<number>`. The last 10 are kept.
 
-Models, textures and sounds go in [assets/](assets/), and the game loads them with paths relative to that folder (e.g. `models/M4A1.gltf`). Each build lists its asset files with their hashes in `assets.txt`. The files themselves are uploaded once to a release tagged `assets`, named by hash, so an asset that doesn't change is never uploaded or downloaded again. The launcher downloads only the files that are new or changed. Don't delete the `assets` release.
+Models, textures and sounds go in [assets/](assets/), and the game loads them with paths relative to that folder (e.g. `models/weapons/M4A1.gltf`). Each build lists its asset files with their hashes in `assets.txt`. The files themselves are uploaded once to a release tagged `assets`, named by hash, so an asset that doesn't change is never uploaded or downloaded again. The launcher downloads only the files that are new or changed. Don't delete the `assets` release.
 
 To ship a new launcher, bump `version` in [launcher/Cargo.toml](launcher/Cargo.toml). Launchers already installed see the new version in the next release and replace themselves.
 
