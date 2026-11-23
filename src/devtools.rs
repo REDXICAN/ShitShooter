@@ -17,12 +17,12 @@ use crate::{
     net::{Connection, MenuStatus, Session},
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
-    player::{Controls, LocalPlayer, PlayerSystems},
+    player::{Controls, GunSlot, LocalPlayer, PlayerSystems},
     protocol::ClientMsg,
     map::PLAYER_HALF,
     loadout::{LoadoutArrow, Slot},
     remote::{Corpse, RemotePlayer},
-    weapons::{SHOTGUN, weapon},
+    weapons::{GUN_COUNT, IRON_SIGHTS, SHOTGUN, WeaponId, weapon},
     world::GameMap,
     settings::{Settings, SettingsMenu},
 };
@@ -278,6 +278,29 @@ fn selftest_play(
             captured.countdown = true;
             println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
             test.capture(&mut commands, "countdown.png");
+        }
+        // Nothing can happen before the match starts: a look at every gun in
+        // the first slot, from the hip and aimed, a few frames each.
+        if session.countdown < 2.4 && player.alive && !session.team_mode() {
+            const FRAMES: u32 = 12;
+            let picture = captured.gallery / FRAMES;
+            let gun = (picture / 2) as WeaponId;
+            let aimed = picture % 2 == 1;
+            let first = *captured.gallery_gun.get_or_insert(player.guns[0]);
+            if gun < GUN_COUNT {
+                player.slot = 0;
+                player.guns[0].weapon = gun;
+                player.guns[0].sight = IRON_SIGHTS;
+                player.aim = aimed as u8 as f32;
+                if captured.gallery % FRAMES == FRAMES - 3 {
+                    let name = format!("gun_{}_{}.png", weapon(gun).name.to_lowercase(), if aimed { "aimed" } else { "hip" });
+                    test.capture(&mut commands, &name);
+                }
+                captured.gallery += 1;
+            } else {
+                player.guns[0] = first;
+                player.aim = 0.0;
+            }
         }
         // In the team modes, a look at the nearest teammate: outlined, named.
         let eye = player.eye();
@@ -548,6 +571,9 @@ struct Captured {
     body: Option<Entity>,
     body_shots: usize,
     body_at: Option<Vec3>,
+    /// Frames into the look at every gun, and the gun to put back after it.
+    gallery: u32,
+    gallery_gun: Option<GunSlot>,
 }
 
 /// Tallies the sound cues of a self-test run: (own, others') per kind.

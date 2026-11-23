@@ -45,7 +45,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 3. [x] Shotgun choke when aiming (#7, part 1)
 4. [x] Loadout menu, layout 1 (PR #4)
 5. [x] Weapon panel, type 1 with the ring reload (PR #4)
-6. [ ] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
+6. [x] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
 7. [ ] Reload animations on the guns
 8. [ ] 2x sight on every gun, and zoom set by the sight (#7, part 2)
 9. [ ] Air strafe tuning (#5)
@@ -223,6 +223,22 @@ For each gun:
   at the hip (the fitting measures the model, so a moved part can shift it).
 - Leave the `.blend1` backups alone; `.gitignore` already skips them. Commit
   the new `.blend` files with the exported models.
+
+Done. What the models have now:
+
+- Every magazine was already its own node (rifle `Mag`, SMG `Cube.015_low`,
+  sniper `Cube.004`, pistol `Cube.013`; `Cube.002` and `Cube.006` were the
+  grip and the backstrap). Each now hangs under a new empty `Magazine` at the
+  top of the magazine, as `MagazineBody`, so no vertex moved.
+- Pistol: `Cube.001` is the slide, now `Slide`. No gun has a separate bolt.
+- Shotgun: the `PumpRib*` are children of `Pump`, so moving `Pump` moves them;
+  `Bead` is `IronSightBead`; `SightMount` sits on the receiver (the file is in
+  metres, so scale 1); `Shell` (a 12 gauge shell along the barrel, brass to
+  the back) hides inside the receiver, so the code must hide it.
+- `art/m4a1.blend`, `mp7.blend`, `scar.blend`, `m1911.blend` are imports of
+  the glTF files, as sources. The 2x sight is built by `art/sight_2x.py`.
+- The self-test now looks at every gun from the hip and aimed during the
+  countdown (`gun_<name>_<hip|aimed>.png`).
 
 ## 7. Reload animations on the guns
 
