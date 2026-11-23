@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loadout Module</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="shell.css">
+<link rel="stylesheet" href="loadout.css">
+</head>
+<body>
+<header class="bar">
+  <strong class="bar-title">ShitShooter · loadout module</strong>
+  <div class="bar-group" data-group="screen"><span>Screen</span><button data-value="pause">Pause</button><button data-value="lobby">Lobby</button></div>
+  <div class="bar-group" data-group="type"><span>Type</span><button data-value="now">Now</button><button data-value="arrows">1 Arrows</button><button data-value="preview">3 3D preview</button><button data-value="cards">4 Cards + popup</button></div>
+  <div class="bar-group" data-group="size"><span>Window</span><button data-value="1280x720">1280×720</button><button data-value="1920x1080">1920×1080</button></div>
+  <button id="reset">Reset loadout</button>
+  <span class="bar-fit" id="fit"></span>
+</header>
+<main class="viewport" id="viewport">
+  <div class="stage" id="stage">
+    <div class="scene"><i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i><i class="s5"></i></div>
+
+    <section class="screen screen-pause" id="screen-pause">
+      <div class="panel">
+        <h1 class="title">PAUSED</h1>
+        <div class="buttons">
+          <button class="btn btn-primary">Resume</button>
+          <button class="btn">Settings</button>
+          <button class="btn btn-danger">Leave</button>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="section">Controls</div>
+            <div class="ctl"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div>
+            <div class="ctl"><kbd>SPACE</kbd><span>Jump, and again in the air (hold: bunny hop)</span></div>
+            <div class="ctl"><kbd>LEFT SHIFT</kbd><span>Dash</span></div>
+            <div class="ctl"><kbd>LEFT CONTROL</kbd><span>Crouch (while running: slide)</span></div>
+            <div class="ctl"><kbd>MOUSE LEFT</kbd><span>Fire</span></div>
+            <div class="ctl"><kbd>MOUSE RIGHT</kbd><span>Aim down sights</span></div>
+            <div class="ctl"><kbd>R</kbd><span>Reload</span></div>
+            <div class="ctl"><kbd>G</kbd><span>Take out your grenade, click to throw</span></div>
+            <div class="ctl"><kbd>F</kbd><span>Ping an enemy (or a spot) for your team</span></div>
+            <div class="ctl"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>Weapons</span></div>
+            <div class="ctl"><kbd>WHEEL UP</kbd><kbd>WHEEL DOWN</kbd><span>Previous / next weapon</span></div>
+            <div class="ctl"><kbd>TAB</kbd><span>Scoreboard</span></div>
+          </div>
+          <div class="card pause-loadout-card"><div id="pause-loadout"></div></div>
+          <div class="card tips">
+            <div class="section">Tips</div>
+            <p>Strafe and turn in the air to build speed.</p>
+            <p>Green pads launch you: arrows throw you their way, plain ones keep your momentum.</p>
+            <p>Bullets take time to arrive: lead moving targets.</p>
+            <p>Team modes: your pings show only to your team.</p>
+            <p>Health returns after 5 s unhurt.</p>
+            <p>Armor takes damage before health and never comes back by itself. You spawn with 25; blue plates give 25 more, up to 50.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen screen-lobby" id="screen-lobby" hidden>
+      <div class="panel">
+        <h1 class="title">LOBBY</h1>
+        <div class="dim lobby-address">Connected to 203.0.113.7:7777</div>
+        <div class="lobby-grid" id="lobby-grid">
+          <div class="card players">
+            <div class="section">Players</div>
+            <div class="roster-head"><i></i><span>PLAYER</span><span>KILLS</span><span>DEATHS</span></div>
+            <div class="roster-row"><i style="background:#ff4a44"></i><span>Host<em>HOST</em></span><b>19</b><b class="dim">12</b></div>
+            <div class="roster-row is-me"><i style="background:#4a90ff"></i><span>You</span><b>13</b><b class="dim">19</b></div>
+            <div class="roster-row"><i style="background:#4adb5c"></i><span>Guest</span><b>10</b><b class="dim">11</b></div>
+          </div>
+          <div class="card match">
+            <div class="section">Match</div>
+            <div class="match-row"><span>Mode</span>Free for all</div>
+            <div class="match-row"><span>Map</span>Arena</div>
+            <div class="match-row"><span>Bots</span>0</div>
+          </div>
+          <div class="card lobby-loadout-card"><div id="lobby-loadout"></div></div>
+        </div>
+        <div class="info">Host won the last match!<br>Waiting for Host to start the match...</div>
+        <div class="buttons">
+          <button class="btn">Settings</button>
+          <button class="btn btn-danger">Leave</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script src="data.js"></script>
+<script src="loadout.js"></script>
+<script src="types.js"></script>
+<script src="shell.js"></script>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>
