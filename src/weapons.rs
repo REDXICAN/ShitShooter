@@ -107,15 +107,16 @@ pub const SIGHTS: [Sight; 5] = [
         zoom: 0.25,
         overlay: true,
     },
-    // An open window with a ring round the dot: low and light, so it suits a pistol too.
+    // A short, thin-walled housing round a big window, a dot in a ring. Made by
+    // art/sights.py with the 2x, in the same style; small enough for the pistol.
     Sight {
         name: "Reflex",
         path: Some("models/sights/reflex.glb"),
         zoom: 0.75,
         overlay: false,
     },
-    // A short tube that magnifies twice, a dot in a ring on its front lens.
-    // Made by art/sight_2x.py; small enough for the pistol.
+    // The reflex's housing, a little longer, with a chevron in a ring; it
+    // magnifies twice. Made by art/sights.py; small enough for the pistol.
     Sight {
         name: "2x sight",
         path: Some("models/sights/2x.glb"),

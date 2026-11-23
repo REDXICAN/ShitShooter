@@ -236,7 +236,7 @@ Done. What the models have now:
   metres, so scale 1); `Shell` (a 12 gauge shell along the barrel, brass to
   the back) hides inside the receiver, so the code must hide it.
 - `art/m4a1.blend`, `mp7.blend`, `scar.blend`, `m1911.blend` are imports of
-  the glTF files, as sources. The 2x sight is built by `art/sight_2x.py`.
+  the glTF files, as sources. The reflex and 2x sights are built by `art/sights.py`.
 - The self-test now looks at every gun from the hip and aimed during the
   countdown (`gun_<name>_<hip|aimed>.png`).
 
