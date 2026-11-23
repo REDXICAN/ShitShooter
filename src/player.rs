@@ -724,9 +724,13 @@ fn follow_camera(
         let lunge = (player.recoil * std::f32::consts::PI).sin();
         (Vec3::new(-0.14, 0.05, -0.22) * lunge, -0.3 * lunge, 0.7 * lunge)
     } else {
+        // Aimed, it only kicks straight back along the line of sight: tipping
+        // or lifting it would throw the sight's dot off the crosshair, so it
+        // would stop showing where the next bullet goes.
+        let loose = 1.0 - player.aim;
         (
-            Vec3::new(0.0, 0.01, 0.07) * player.recoil * (1.0 - 0.6 * player.aim),
-            player.recoil * 0.07,
+            Vec3::new(0.0, 0.01 * loose, 0.07 * (1.0 - 0.6 * player.aim)) * player.recoil,
+            player.recoil * 0.07 * loose,
             0.0,
         )
     };
