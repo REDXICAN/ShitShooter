@@ -638,6 +638,15 @@ impl Server {
             ClientMsg::Cook => self.handle_cook(id),
             ClientMsg::Grenade { kind, origin, vel } => self.handle_grenade(id, kind, origin, vel),
             ClientMsg::Ping { target, pos } => self.handle_ping(id, target, pos),
+            ClientMsg::Respawn if self.phase == Phase::Playing => {
+                if let Some(player) = self.players.get_mut(&id)
+                    && !player.alive
+                    && RESPAWN_DELAY - player.respawn_in >= MIN_RESPAWN_DELAY
+                {
+                    // `update_match` puts them in on its next tick.
+                    player.respawn_in = 0.0;
+                }
+            }
             _ => {}
         }
     }
@@ -1716,6 +1725,33 @@ mod tests {
         let person = &server.players[&id];
         assert!(person.cooking.is_none());
         assert_eq!(person.deaths, 1, "the frag in hand did not kill its holder");
+    }
+
+    #[test]
+    fn the_dead_respawn_after_the_delay_or_sooner_when_they_ask() {
+        let (mut server, id) = match_with_one_person();
+        let tick = |server: &mut Server, seconds: f32| {
+            for _ in 0..(seconds * 60.0) as usize {
+                server.update_match(1.0 / 60.0);
+            }
+        };
+        // By the delay alone.
+        server.damage(id, id, 1000, KNIFE);
+        assert!(!server.players[&id].alive);
+        tick(&mut server, RESPAWN_DELAY - 0.5);
+        assert!(!server.players[&id].alive, "respawned before the delay");
+        tick(&mut server, 1.0);
+        assert!(server.players[&id].alive, "not respawned after the delay");
+
+        // Asking straight away is ignored; asking a moment later is not.
+        server.damage(id, id, 1000, KNIFE);
+        server.handle_message(id, ClientMsg::Respawn);
+        tick(&mut server, 0.1);
+        assert!(!server.players[&id].alive, "a click as they died respawned them");
+        tick(&mut server, MIN_RESPAWN_DELAY);
+        server.handle_message(id, ClientMsg::Respawn);
+        tick(&mut server, 0.1);
+        assert!(server.players[&id].alive, "asking to respawn did nothing");
     }
 
     #[test]

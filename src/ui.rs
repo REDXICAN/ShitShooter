@@ -1130,6 +1130,10 @@ enum Hud {
     Feed(usize),
     /// Death and respawn message.
     Center,
+    /// Under it while dead: how long until we respawn, and how to do it now.
+    Respawn,
+    /// Under that: the loadout we will respawn with, and the keys that change it.
+    DeadLoadout,
     /// The name of the weapon in hand.
     WeaponTitle,
     Ammo,
@@ -1481,7 +1485,14 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     ));
 
     // Death / respawn message, a bit above the middle of the screen.
-    commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
+    commands.spawn((
+        hud_line(30.0),
+        children![
+            hud_text(30.0, DANGER, Hud::Center),
+            hud_text(20.0, TEXT, Hud::Respawn),
+            hud_text(16.0, DIM, Hud::DeadLoadout),
+        ],
+    ));
 
     // Kill announcements, a bit below it.
     commands.spawn((
@@ -1921,10 +1932,37 @@ fn update_hud(
             Hud::Center => {
                 let message = match (&player.killed_by, player.alive) {
                     (_, true) => String::new(),
-                    (Some(killer), false) => format!("Fragged by {killer}  -  respawning..."),
+                    (Some(killer), false) => format!("Fragged by {killer}"),
                     (None, false) => "Get ready...".to_string(),
                 };
                 (message, DANGER)
+            }
+            Hud::Respawn => {
+                let message = if player.alive || player.killed_by.is_none() {
+                    String::new()
+                } else if player.respawn_asked {
+                    "Respawning...".to_string()
+                } else {
+                    let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
+                    format!("Respawning in {left:.0}  -  {} to respawn now", settings.key_name(Action::Fire))
+                };
+                (message, TEXT)
+            }
+            Hud::DeadLoadout => {
+                let message = if player.alive || player.killed_by.is_none() {
+                    String::new()
+                } else {
+                    format!(
+                        "[{}] {}    [{}] {}    [{}] {}",
+                        settings.key_name(Action::Primary),
+                        weapon(settings.primary).name,
+                        settings.key_name(Action::Secondary),
+                        weapon(settings.secondary).name,
+                        settings.key_name(Action::Grenade),
+                        grenade(settings.grenade).name,
+                    )
+                };
+                (message, DIM)
             }
             Hud::WeaponTitle => {
                 if gun.is_some() && player.reloading() {

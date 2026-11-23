@@ -118,6 +118,10 @@ impl Plugin for PlayerPlugin {
                         .chain()
                         .in_set(PlayerSystems::Simulate)
                         .run_if(in_state(AppState::Playing)),
+                    while_dead
+                        .after(toggle_pause)
+                        .run_if(in_state(AppState::Playing))
+                        .run_if(resource_exists::<Connection>),
                     follow_camera
                         .in_set(PlayerSystems::Camera)
                         .run_if(in_state(AppState::Playing)),
@@ -174,6 +178,10 @@ pub struct LocalPlayer {
     /// Seconds after the last shot before the view starts drifting back.
     pub kick_hold: f32,
     pub killed_by: Option<String>,
+    /// Seconds since we died.
+    pub dead_for: f32,
+    /// We asked the server to respawn us early.
+    pub respawn_asked: bool,
     /// Seconds the hit marker stays visible.
     pub hit_marker: f32,
     /// Seconds the hit marker stays yellow, for a headshot.
@@ -229,6 +237,8 @@ impl Default for LocalPlayer {
             view_kick: Vec2::ZERO,
             kick_hold: 0.0,
             killed_by: None,
+            dead_for: 0.0,
+            respawn_asked: false,
             hit_marker: 0.0,
             headshot_marker: 0.0,
             kill_marker: 0.0,
@@ -383,11 +393,55 @@ fn handle_net(
                 player.health = 0;
                 player.armor = 0;
                 player.killed_by = Some(session.name_of(*killer).to_string());
+                player.dead_for = 0.0;
+                player.respawn_asked = false;
                 // A frag being cooked drops (the server throws it down for us).
                 player.hand = None;
             }
             _ => {}
         }
+    }
+}
+
+/// While dead: a click respawns us at once instead of at the end of
+/// `RESPAWN_DELAY`, and the weapon and grenade keys change the loadout we
+/// will be handed when we do.
+fn while_dead(
+    time: Res<Time>,
+    mut player: ResMut<LocalPlayer>,
+    mut connection: ResMut<Connection>,
+    mut input: ParamSet<(ActionInput, ResMut<Settings>)>,
+) {
+    // Before our first spawn there is no death screen.
+    if player.alive || player.killed_by.is_none() {
+        return;
+    }
+    player.dead_for += time.delta_secs();
+    let (respawn, primary, secondary, grenade) = {
+        let input = input.p0();
+        (
+            input.just_pressed(Action::Fire),
+            input.just_pressed(Action::Primary),
+            input.just_pressed(Action::Secondary),
+            input.just_pressed(Action::Grenade),
+        )
+    };
+    if respawn && !player.respawn_asked && player.dead_for >= MIN_RESPAWN_DELAY {
+        player.respawn_asked = true;
+        connection.send(&ClientMsg::Respawn);
+    }
+    if primary || secondary || grenade {
+        let mut settings = input.p1();
+        if primary {
+            settings.cycle_gun(0);
+        }
+        if secondary {
+            settings.cycle_gun(1);
+        }
+        if grenade {
+            settings.cycle_grenade();
+        }
+        settings.save();
     }
 }
 

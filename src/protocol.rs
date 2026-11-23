@@ -18,7 +18,11 @@ pub const MAX_HEALTH: i32 = 100;
 pub const REGEN_DELAY: f32 = 5.0;
 /// ...at this many points per second.
 pub const REGEN_RATE: f32 = 20.0;
-pub const RESPAWN_DELAY: f32 = 2.0;
+/// Seconds dead before being put back in by the server...
+pub const RESPAWN_DELAY: f32 = 10.0;
+/// ...unless the player asks sooner (`ClientMsg::Respawn`), which counts only
+/// after this long, so a shot fired as you die does not skip the death screen.
+pub const MIN_RESPAWN_DELAY: f32 = 0.5;
 /// Armor soaks up damage before health does. Every life starts with
 /// `START_ARMOR`; pickups on the ground add `ARMOR_PICKUP`, up to `MAX_ARMOR`.
 /// Armor does not come back by itself.
@@ -151,7 +155,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-9:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-10:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -228,6 +232,8 @@ pub enum ClientMsg {
         target: Option<PlayerId>,
         pos: [f32; 3],
     },
+    /// While dead: put us back in now rather than at the end of `RESPAWN_DELAY`.
+    Respawn,
 }
 
 /// Client -> server, unreliable, sent every fixed tick while alive.
