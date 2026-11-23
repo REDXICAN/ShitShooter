@@ -43,6 +43,7 @@ impl Plugin for RemotePlugin {
                 Update,
                 (
                     size_gun_boxes.after(GunModelSystems::Show),
+                    settle_corpses,
                     (show_outlines, draw_ally_tags)
                         .chain()
                         .after(RemoteSystems)
@@ -123,7 +124,7 @@ fn apply_snapshots(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut index: ResMut<RemoteIndex>,
     mut local: ResMut<LocalPlayer>,
-    mut remotes: Query<(&mut RemotePlayer, &mut Visibility)>,
+    mut remotes: Query<(&mut RemotePlayer, &mut Visibility, &Transform)>,
 ) {
     let Some(SnapshotMsg(snapshot)) = snapshots.read().last() else {
         return;
@@ -147,11 +148,19 @@ fn apply_snapshots(
             yaw: snap.yaw,
             pitch: snap.pitch,
         };
-        if let Some((mut remote, mut visibility)) = index
+        if let Some((mut remote, mut visibility, transform)) = index
             .0
             .get(&snap.id)
             .and_then(|entity| remotes.get_mut(*entity).ok())
         {
+            // They just died: their body stays behind where they fell, apart
+            // from them, so it stays put when they respawn.
+            if remote.alive && !snap.alive
+                && let Some(info) = session.roster.iter().find(|p| p.id == snap.id)
+            {
+                let material = skins.material(snap.id, info.color, &model, &mut images, &mut materials);
+                spawn_corpse(&mut commands, &model, &assets, material, transform, &remote);
+            }
             if !snap.alive {
                 remote.samples.clear();
             } else {
@@ -278,6 +287,100 @@ fn apply_snapshots(
         }
         present
     });
+}
+
+/// Seconds a body lies where it fell before it sinks into the floor...
+const CORPSE_TIME: f32 = 8.0;
+/// ...which takes this long.
+const CORPSE_SINK: f32 = 1.5;
+/// Seconds it takes to tip over onto the floor.
+const CORPSE_FALL: f32 = 0.45;
+
+/// A dead player's body. Only for show: it blocks nobody and no bullets.
+#[derive(Component)]
+pub struct Corpse {
+    /// Seconds since they died.
+    pub age: f32,
+}
+
+/// The part of a body that tips over, about its feet.
+#[derive(Component)]
+struct CorpsePivot;
+
+/// A copy of a remote player's body and head, standing where they died, that
+/// `settle_corpses` then tips over onto its back.
+fn spawn_corpse(
+    commands: &mut Commands,
+    model: &PlayerModel,
+    assets: &SharedAssets,
+    material: Handle<StandardMaterial>,
+    transform: &Transform,
+    remote: &RemotePlayer,
+) {
+    // The reported position is the middle of their box; the body stands on its floor.
+    let half = if remote.crouching { CROUCH_HALF } else { PLAYER_HALF };
+    let feet = transform.translation - Vec3::Y * half.y;
+    commands.spawn((
+        Corpse { age: 0.0 },
+        Transform::from_translation(feet).with_rotation(transform.rotation),
+        Visibility::default(),
+        DespawnOnExit(AppState::Playing),
+        children![(
+            CorpsePivot,
+            Transform::default(),
+            Visibility::default(),
+            children![
+                (
+                    Mesh3d(model.body.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(0.0, BODY_HEIGHT / 2.0, 0.0),
+                ),
+                (
+                    Transform::from_xyz(0.0, BODY_HEIGHT + NECK, 0.0),
+                    Visibility::default(),
+                    children![
+                        (Mesh3d(model.head.clone()), MeshMaterial3d(material)),
+                        (
+                            Mesh3d(assets.cube.clone()),
+                            MeshMaterial3d(assets.dark.clone()),
+                            Transform::from_xyz(0.0, 0.03, -0.17).with_scale(Vec3::new(0.36, 0.11, 0.2)),
+                        ),
+                    ],
+                ),
+            ],
+        )],
+    ));
+}
+
+/// Bodies tip over backwards, as if falling, then lie there a while, then
+/// sink into the floor and are gone.
+fn settle_corpses(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut corpses: Query<(Entity, &mut Corpse, &mut Transform, &Children)>,
+    mut pivots: Query<&mut Transform, (With<CorpsePivot>, Without<Corpse>)>,
+) {
+    for (entity, mut corpse, mut transform, children) in &mut corpses {
+        let before = corpse.age;
+        corpse.age += time.delta_secs();
+        if corpse.age >= CORPSE_TIME + CORPSE_SINK {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if before <= CORPSE_FALL {
+            // Speeds up as it goes, like a fall, and lies on its back at the end,
+            // lifted by the body's thickness so it rests on the floor.
+            let fall = (corpse.age / CORPSE_FALL).min(1.0).powi(2);
+            for child in children.iter() {
+                if let Ok(mut pivot) = pivots.get_mut(child) {
+                    pivot.rotation = Quat::from_rotation_x(fall * std::f32::consts::FRAC_PI_2);
+                    pivot.translation.y = BODY_RADIUS * fall;
+                }
+            }
+        }
+        let sinking = (corpse.age - CORPSE_TIME).max(0.0) - (before - CORPSE_TIME).max(0.0);
+        transform.translation.y -= sinking / CORPSE_SINK * (BODY_RADIUS * 2.0 + 0.1);
+    }
 }
 
 /// A respawn is a teleport: do not blend from the place they died.

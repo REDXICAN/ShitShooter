@@ -16,7 +16,9 @@ use crate::{
     paint_editor::PaintEditor,
     player::{Controls, LocalPlayer, PlayerSystems},
     protocol::ClientMsg,
-    remote::RemotePlayer,
+    map::PLAYER_HALF,
+    remote::{Corpse, RemotePlayer},
+    world::GameMap,
     settings::SettingsMenu,
 };
 
@@ -202,6 +204,8 @@ fn selftest_play(
     mut settings_menu: ResMut<SettingsMenu>,
     mut connection: ResMut<Connection>,
     remotes: Query<(&RemotePlayer, &Transform)>,
+    corpses: Query<(Entity, &Corpse, &Transform)>,
+    map: Res<GameMap>,
     cue_count: Res<CueCount>,
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut captured: Local<Captured>,
@@ -339,6 +343,55 @@ fn selftest_play(
         player.pitch = to.y.atan2(to.with_y(0.0).length());
     }
 
+    // The first body to fall: we stand next to it while it falls, while it
+    // lies there and while it sinks.
+    const SHOTS: [(f32, &str); 3] = [(0.25, "body_falling.png"), (1.5, "body.png"), (8.9, "body_sinking.png")];
+    let first = captured.body.or_else(|| {
+        corpses
+            .iter()
+            .find(|(_, corpse, _)| corpse.age < 0.1 && player.alive)
+            .map(|(entity, ..)| entity)
+    });
+    captured.body = first;
+    if first.is_some() && !player.alive && captured.body_shots < SHOTS.len() {
+        // The camera stays where we died: no more pictures of it.
+        println!("[selftest] died while looking at a body");
+        captured.body_shots = SHOTS.len();
+    }
+    if let Some((_, corpse, transform)) = first.and_then(|entity| corpses.get(entity).ok()) {
+        // Where it fell: it sinks below the floor at the end.
+        let lies = *captured.body_at.get_or_insert(transform.translation);
+        // The rest of the script waits until the pictures are taken.
+        if captured.body_shots < SHOTS.len() {
+            test.clock -= time.delta_secs();
+        }
+        if let Some(&(at, name)) = SHOTS.get(captured.body_shots)
+            && corpse.age > at - 0.2
+        {
+            // A free spot a few metres to one side of it, with a clear view of it.
+            let side = transform.rotation * Vec3::X;
+            let spot = (0..16)
+                .map(|i| {
+                    let around = Quat::from_rotation_y(i as f32 * std::f32::consts::TAU / 16.0);
+                    lies + around * side * 3.5 + Vec3::Y * (PLAYER_HALF.y + 0.05)
+                })
+                .find(|spot| map.0.is_free(*spot, PLAYER_HALF) && map.0.line_of_sight(*spot, lies + Vec3::Y * 0.3));
+            if let Some(spot) = spot {
+                player.pos = spot;
+                player.vel = Vec3::ZERO;
+                let to = lies + Vec3::Y * 0.3 - player.eye();
+                player.yaw = (-to.x).atan2(-to.z);
+                player.pitch = to.y.atan2(to.with_y(0.0).length());
+            }
+            if corpse.age > at {
+                captured.body_shots += 1;
+                let seen = if spot.is_some() { "seen" } else { "no clear view" };
+                println!("[selftest] body {:.1} s old, {seen}", corpse.age);
+                test.capture(&mut commands, name);
+            }
+        }
+    }
+
     if test.reached(2, 3.3) {
         test.capture(&mut commands, "ping.png");
     }
@@ -395,6 +448,10 @@ struct Captured {
     countdown: bool,
     ally: bool,
     hurt: bool,
+    /// The first body to fall, and how many pictures of it have been taken.
+    body: Option<Entity>,
+    body_shots: usize,
+    body_at: Option<Vec3>,
 }
 
 /// Tallies the sound cues of a self-test run: (own, others') per kind.
