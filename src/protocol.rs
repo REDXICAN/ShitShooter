@@ -30,6 +30,13 @@ pub const ARMOR_RESPAWN: f32 = 20.0;
 pub const DEFAULT_FRAG_LIMIT: u32 = 20;
 pub const DEFAULT_MATCH_MINUTES: f32 = 10.0;
 pub const SNAPSHOT_RATE: f32 = 30.0;
+/// Seconds between everybody spawning and the match starting. Nobody can
+/// move, shoot or throw until it has run out, and the clock does not run.
+pub const COUNTDOWN: f32 = 5.0;
+/// Seconds a ping stays on teammates' screens (less if its enemy dies).
+pub const PING_TIME: f32 = 5.0;
+/// Seconds a player must wait between two pings.
+pub const PING_COOLDOWN: f32 = 0.75;
 
 // Game modes. In the team modes players are split into two teams that cannot
 // hurt each other.
@@ -73,6 +80,7 @@ pub const FLASH: GrenadeKind = 1;
 pub const SMOKE: GrenadeKind = 2;
 pub const GRENADE_KINDS: usize = 3;
 
+/// Every player carries one kind of grenade, picked in their loadout.
 pub struct GrenadeStats {
     pub name: &'static str,
     /// Carried at most. One comes back every `recharge` seconds.
@@ -114,6 +122,9 @@ pub fn grenade(kind: GrenadeKind) -> &'static GrenadeStats {
     &GRENADES[kind as usize % GRENADE_KINDS]
 }
 
+/// The most grenades of any kind somebody can carry.
+pub const MOST_GRENADES: usize = 2;
+
 pub const GRENADE_THROW_SPEED: f32 = 21.0;
 /// Right-click throws are lobbed gently, this much as hard.
 pub const GRENADE_LOB: f32 = 0.45;
@@ -143,7 +154,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-7:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-8:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -166,6 +177,9 @@ pub struct PlayerInfo {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ClientMsg {
     Hello { name: String },
+    /// The grenade we want to carry, from our next spawn on. Sent after
+    /// `Hello` and whenever it is changed.
+    Loadout { grenade: GrenadeKind },
     /// Lobby leader only.
     StartMatch,
     /// Lobby leader only.
@@ -206,6 +220,12 @@ pub enum ClientMsg {
         origin: [f32; 3],
         vel: [f32; 3],
     },
+    /// Point something out to the team: an enemy (`target`), or a spot.
+    /// Only teammates are told.
+    Ping {
+        target: Option<PlayerId>,
+        pos: [f32; 3],
+    },
 }
 
 /// Client -> server, unreliable, sent every fixed tick while alive.
@@ -242,6 +262,8 @@ pub enum ServerMsg {
         /// See `score_limit`.
         score_limit: u32,
         time_left: f32,
+        /// Seconds of the starting countdown left (see `COUNTDOWN`).
+        countdown: f32,
     },
     MatchEnded {
         winner: Winner,
@@ -251,6 +273,8 @@ pub enum ServerMsg {
         pos: [f32; 3],
         yaw: f32,
         spawn_seq: u32,
+        /// The grenade they carry this life, and start with `max` of.
+        grenade: GrenadeKind,
     },
     /// Somebody else fired. Sent to everyone but the shooter.
     Fire {
@@ -291,6 +315,13 @@ pub enum ServerMsg {
         /// The grenade that went off (or one never thrown, gone off in hand).
         id: u32,
         kind: GrenadeKind,
+        pos: [f32; 3],
+    },
+    /// A teammate pinged an enemy (`target`) or a spot. Sent only to the
+    /// pinger's team.
+    Ping {
+        from: PlayerId,
+        target: Option<PlayerId>,
         pos: [f32; 3],
     },
 }

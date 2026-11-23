@@ -15,6 +15,7 @@ mod grenade;
 mod gun_model;
 mod map;
 mod net;
+mod ping;
 mod player;
 mod protocol;
 mod remote;
@@ -192,6 +193,7 @@ fn main() {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
+            ping::PingPlugin,
             gun_model::GunModelPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,

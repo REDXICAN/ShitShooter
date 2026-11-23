@@ -131,9 +131,8 @@ fn fire(
     }
     player.knife_cooldown = (player.knife_cooldown - dt).max(0.0);
     player.draw = (player.draw - dt).max(0.0);
-    for (count, stats) in player.grenades.iter_mut().zip(&GRENADES) {
-        *count = (*count + dt / stats.recharge).min(stats.max);
-    }
+    let carried = grenade(player.grenade);
+    player.grenades = (player.grenades + dt / carried.recharge).min(carried.max);
     if let Some(InHand { fuse: Some(fuse), .. }) = &mut player.hand {
         *fuse -= dt;
         if *fuse <= 0.0 {
@@ -145,6 +144,28 @@ fn fire(
         *trigger_buffer = 0.0;
         player.hand = None;
         return;
+    }
+    // Nothing to fight with until the countdown is over.
+    if session.frozen() {
+        *trigger_buffer = 0.0;
+        return;
+    }
+
+    // The grenade key takes out the grenade in the loadout, or puts it away
+    // again (not a frag with its pin pulled: that one has to go).
+    if input.just_pressed(Action::Grenade) {
+        match player.hand {
+            Some(InHand { fuse: None, .. }) => player.hand = None,
+            None if player.grenades >= 1.0 => {
+                player.hand = Some(InHand {
+                    kind: player.grenade,
+                    fuse: None,
+                });
+                // The other hand is busy: a reload is abandoned.
+                player.reload = 0.0;
+            }
+            _ => {}
+        }
     }
 
     // Switching weapons takes a moment and abandons a reload. It also puts
@@ -197,27 +218,23 @@ fn fire(
     // With a grenade in hand, a click throws it: a frag takes one click to
     // pull the pin (its fuse burns from then on) and another to throw. A
     // right-click lobs it gently, pin and all.
-    if let Some(mut hand) = player.hand
-        && player.wheel.is_none()
-    {
+    if let Some(mut hand) = player.hand {
         let lob = input.just_pressed(Action::Aim);
         if input.just_pressed(Action::Fire) || lob {
             *fire_held = true;
             let mut throw = true;
             if hand.kind == FRAG && hand.fuse.is_none() {
-                let count = &mut player.grenades[FRAG as usize];
-                if *count >= 1.0 {
-                    *count -= 1.0;
+                if player.grenades >= 1.0 {
+                    player.grenades -= 1.0;
                     hand.fuse = Some(grenade(FRAG).fuse);
                     connection.send(&ClientMsg::Cook);
                     own_sound(Sound::Pin);
                 }
                 throw = lob && hand.fuse.is_some();
             } else if hand.kind != FRAG {
-                let count = &mut player.grenades[hand.kind as usize];
-                throw = *count >= 1.0;
+                throw = player.grenades >= 1.0;
                 if throw {
-                    *count -= 1.0;
+                    player.grenades -= 1.0;
                 }
             }
             player.hand = Some(hand);
@@ -249,7 +266,7 @@ fn fire(
     if !input.pressed(Action::Fire) {
         *fire_held = false;
     }
-    if player.hand.is_some() || player.wheel.is_some() || *fire_held {
+    if player.hand.is_some() || *fire_held {
         *trigger_buffer = 0.0;
         return;
     }

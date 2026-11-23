@@ -170,8 +170,17 @@ fn selftest_play(
     cue_count: Res<CueCount>,
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut marker_captured: Local<bool>,
-    mut wheel_captured: Local<bool>,
+    mut countdown_captured: Local<bool>,
 ) {
+    // The script starts once the countdown is over.
+    if session.frozen() {
+        if session.countdown < 3.5 && !*countdown_captured {
+            *countdown_captured = true;
+            println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
+            test.capture(&mut commands, "countdown.png");
+        }
+        return;
+    }
     if player.hit_marker > 0.0 && !*marker_captured {
         *marker_captured = true;
         test.capture(&mut commands, "hit.png");
@@ -214,20 +223,14 @@ fn selftest_play(
             keys.release(key);
         }
     };
-    // A frag early on (taken from the wheel, a click to pull the pin, and
-    // lobbed with a right-click), then a smoke picked on the wheel and thrown
-    // with a click, a crouch that turns into a slide, and a reload by hand.
+    // A frag early on (taken out, a click to pull the pin, and lobbed with a
+    // right-click), then the second one cooked and thrown with clicks, a
+    // crouch that turns into a slide, a ping, and a reload by hand.
     hold(KeyCode::KeyG, (1.0..1.1).contains(&t) || (1.6..1.75).contains(&t));
-    if (1.6..1.75).contains(&t)
-        && let Some(cursor) = &mut player.wheel
-    {
-        let smoke = crate::player::WHEEL_DIRS[crate::protocol::SMOKE as usize];
-        // From the second frame on, the wheel shows the cursor on the smoke.
-        if *cursor == smoke && !*wheel_captured {
-            *wheel_captured = true;
-            test.capture(&mut commands, "wheel.png");
-        }
-        *cursor = smoke;
+    if (3.0..3.05).contains(&t) {
+        mouse.press(MouseButton::Middle);
+    } else {
+        mouse.release(MouseButton::Middle);
     }
     hold(KeyCode::ControlLeft, (2.35..3.3).contains(&t));
     hold(KeyCode::KeyR, (6.6..6.7).contains(&t));
@@ -276,30 +279,33 @@ fn selftest_play(
         player.pitch = to.y.atan2(to.with_y(0.0).length());
     }
 
-    if test.reached(2, 3.6) {
+    if test.reached(2, 3.3) {
+        test.capture(&mut commands, "ping.png");
+    }
+    if test.reached(3, 3.6) {
         test.capture(&mut commands, "play.png");
     }
-    if test.reached(3, 6.0) {
+    if test.reached(4, 6.0) {
         test.capture(&mut commands, "scores.png");
     }
-    if test.reached(4, 7.5) {
+    if test.reached(5, 7.5) {
         controls.captured = false;
     }
-    if test.reached(5, 8.0) {
+    if test.reached(6, 8.0) {
         test.capture(&mut commands, "pause.png");
     }
     // A screenshot is taken a frame or two after it is asked for, so the
     // settings open a moment later, not at once.
-    if test.reached(6, 8.3) {
+    if test.reached(7, 8.3) {
         settings_menu.open = true;
     }
-    if test.reached(7, 8.8) {
+    if test.reached(8, 8.8) {
         test.capture(&mut commands, "settings.png");
     }
-    if test.reached(8, 9.2) {
+    if test.reached(9, 9.2) {
         settings_menu.open = false;
     }
-    if test.reached(9, 9.6) {
+    if test.reached(10, 9.6) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",
@@ -335,6 +341,8 @@ struct CueCount {
     bounces: (u32, u32),
     explosions: (u32, u32),
     armor: (u32, u32),
+    /// Countdown beeps and pings.
+    signals: (u32, u32),
 }
 
 fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut<CueCount>) {
@@ -352,6 +360,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
             Sound::Explosion | Sound::Flashbang | Sound::SmokePop => &mut count.explosions,
             Sound::Ringing => &mut count.explosions,
             Sound::ArmorBreak | Sound::ArmorBroken | Sound::ArmorPickup => &mut count.armor,
+            Sound::Countdown | Sound::Go | Sound::Ping => &mut count.signals,
         };
         if cue.at.is_none() {
             slot.0 += 1;

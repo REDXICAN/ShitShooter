@@ -179,8 +179,14 @@ struct Player {
     since_damage: f32,
     /// Fraction of a health point regenerated so far.
     regen: f32,
-    /// Grenades of each kind in hand, counted the same way the client counts them.
-    grenades: [f32; GRENADE_KINDS],
+    /// The grenade carried this life, and how many of it, counted the same
+    /// way the client counts them.
+    grenade: GrenadeKind,
+    grenades: f32,
+    /// The grenade picked in their loadout: carried from the next spawn on.
+    loadout_grenade: GrenadeKind,
+    /// Seconds until they may ping again.
+    ping_cooldown: f32,
     /// Seconds left on the fuse of the frag with its pin pulled, if any.
     cooking: Option<f32>,
     bot: Option<Bot>,
@@ -217,6 +223,8 @@ pub struct Server {
     map: Map,
     players: HashMap<PlayerId, Player>,
     phase: Phase,
+    /// Seconds of the starting countdown left; 0 once the match is under way.
+    countdown: f32,
     time_left: f32,
     join_counter: u64,
     next_bot_id: PlayerId,
@@ -269,6 +277,7 @@ impl Server {
             armor_respawn: Vec::new(),
             players: HashMap::new(),
             phase: Phase::Lobby,
+            countdown: 0.0,
             time_left: 0.0,
             join_counter: 0,
             next_bot_id: 1,
@@ -356,6 +365,10 @@ impl Server {
             }
         }
 
+        for player in self.players.values_mut() {
+            player.ping_cooldown = (player.ping_cooldown - dt).max(0.0);
+        }
+
         // With nobody left to play, fall back to the lobby (drops leftover bots' match).
         if self.phase == Phase::Playing && self.players.values().all(|p| p.bot.is_some()) {
             self.end_match(Winner::Nobody);
@@ -373,16 +386,26 @@ impl Server {
         self.transport.send_packets(&mut self.renet);
     }
 
+    /// True once the match is under way: playing, and the countdown is over.
+    fn live(&self) -> bool {
+        self.phase == Phase::Playing && self.countdown <= 0.0
+    }
+
     fn update_match(&mut self, dt: f32) {
+        // Everybody is in place, frozen, while the countdown runs.
+        if self.countdown > 0.0 {
+            self.countdown = (self.countdown - dt).max(0.0);
+            self.send_snapshot(dt);
+            return;
+        }
         self.time_left -= dt;
 
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         for id in &ids {
             let player = self.players.get_mut(id).unwrap();
             player.fire_credit = (player.fire_credit + dt).min(MAX_FIRE_CREDIT);
-            for (count, stats) in player.grenades.iter_mut().zip(&GRENADES) {
-                *count = (*count + dt / stats.recharge).min(stats.max);
-            }
+            let stats = grenade(player.grenade);
+            player.grenades = (player.grenades + dt / stats.recharge).min(stats.max);
             // Health comes back after a while out of trouble.
             player.since_damage += dt;
             if player.alive && player.health < MAX_HEALTH && player.since_damage >= REGEN_DELAY {
@@ -415,6 +438,30 @@ impl Server {
             return;
         }
 
+        self.send_snapshot(dt);
+
+        if self.time_left <= 0.0 {
+            // Time is up: the best score wins, a tie has no winner.
+            let winner = if is_team_mode(self.settings.mode) {
+                match self.team_scores[0].cmp(&self.team_scores[1]) {
+                    std::cmp::Ordering::Greater => Winner::Team(0),
+                    std::cmp::Ordering::Less => Winner::Team(1),
+                    std::cmp::Ordering::Equal => Winner::Nobody,
+                }
+            } else {
+                let best = self.players.values().map(|p| p.kills).max().unwrap_or(0);
+                let mut leaders = self.players.iter().filter(|(_, p)| p.kills == best);
+                match (leaders.next(), leaders.next()) {
+                    (Some((id, _)), None) => Winner::Player(*id),
+                    _ => Winner::Nobody,
+                }
+            };
+            self.end_match(winner);
+        }
+    }
+
+    /// Sends everybody a snapshot, `SNAPSHOT_RATE` times a second.
+    fn send_snapshot(&mut self, dt: f32) {
         self.snapshot_timer += dt;
         if self.snapshot_timer >= 1.0 / SNAPSHOT_RATE {
             self.snapshot_timer = 0.0;
@@ -446,25 +493,6 @@ impl Server {
                     .collect(),
             };
             self.renet.broadcast_message(CH_UNRELIABLE, encode(&snapshot));
-        }
-
-        if self.time_left <= 0.0 {
-            // Time is up: the best score wins, a tie has no winner.
-            let winner = if is_team_mode(self.settings.mode) {
-                match self.team_scores[0].cmp(&self.team_scores[1]) {
-                    std::cmp::Ordering::Greater => Winner::Team(0),
-                    std::cmp::Ordering::Less => Winner::Team(1),
-                    std::cmp::Ordering::Equal => Winner::Nobody,
-                }
-            } else {
-                let best = self.players.values().map(|p| p.kills).max().unwrap_or(0);
-                let mut leaders = self.players.iter().filter(|(_, p)| p.kills == best);
-                match (leaders.next(), leaders.next()) {
-                    (Some((id, _)), None) => Winner::Player(*id),
-                    _ => Winner::Nobody,
-                }
-            };
-            self.end_match(winner);
         }
     }
 
@@ -550,9 +578,15 @@ impl Server {
                         &ServerMsg::MatchStarted {
                             score_limit: score_limit(self.settings.mode, self.settings.frag_limit),
                             time_left: self.time_left,
+                            countdown: self.countdown,
                         },
                     );
                     self.spawn_player(id);
+                }
+            }
+            ClientMsg::Loadout { grenade } => {
+                if let Some(player) = self.players.get_mut(&id) {
+                    player.loadout_grenade = grenade % GRENADE_KINDS as GrenadeKind;
                 }
             }
             ClientMsg::StartMatch if is_leader && self.phase == Phase::Lobby => self.start_match(),
@@ -585,6 +619,7 @@ impl Server {
             } => self.handle_hit(id, victim, weapon, headshot),
             ClientMsg::Cook => self.handle_cook(id),
             ClientMsg::Grenade { kind, origin, vel } => self.handle_grenade(id, kind, origin, vel),
+            ClientMsg::Ping { target, pos } => self.handle_ping(id, target, pos),
             _ => {}
         }
     }
@@ -594,7 +629,7 @@ impl Server {
     fn handle_fire(&mut self, shooter_id: PlayerId, weapon_id: WeaponId, origin: [f32; 3], dirs: Vec<[f32; 3]>) {
         let stats = weapon(weapon_id);
         let origin_v = Vec3::from(origin);
-        if self.phase != Phase::Playing
+        if !self.live()
             || weapon_id as usize >= WEAPONS.len()
             || dirs.len() != stats.pellets
             || !origin_v.is_finite()
@@ -631,7 +666,7 @@ impl Server {
     /// `victim_id`. Accepted if the shooter really had a bullet in the air (or
     /// a knife swing going and the victim within reach).
     fn handle_hit(&mut self, shooter_id: PlayerId, victim_id: PlayerId, weapon_id: WeaponId, headshot: bool) {
-        if self.phase != Phase::Playing || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
+        if !self.live() || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
             return;
         }
         let Some(victim_pos) = self.players.get(&victim_id).filter(|v| v.alive).map(|v| v.pos) else {
@@ -660,32 +695,31 @@ impl Server {
 
     /// A frag's pin is pulled: the fuse burns from now, thrown or not.
     fn handle_cook(&mut self, id: PlayerId) {
-        if self.phase != Phase::Playing {
+        if !self.live() {
             return;
         }
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
-        let count = &mut player.grenades[FRAG as usize];
         // A little slack on the recharge for network jitter.
-        if !player.alive || player.cooking.is_some() || *count < 0.9 {
+        if !player.alive || player.grenade != FRAG || player.cooking.is_some() || player.grenades < 0.9 {
             return;
         }
-        *count = (*count - 1.0).max(0.0);
+        player.grenades = (player.grenades - 1.0).max(0.0);
         player.cooking = Some(grenade(FRAG).fuse);
     }
 
     /// A frag must have been cooked first; a flash or smoke is taken from
-    /// what the thrower carries.
+    /// what the thrower carries. Only the kind in their loadout can be thrown.
     fn handle_grenade(&mut self, thrower_id: PlayerId, kind: GrenadeKind, origin: [f32; 3], vel: [f32; 3]) {
         let (pos, vel) = (Vec3::from(origin), Vec3::from(vel));
-        if self.phase != Phase::Playing || kind as usize >= GRENADE_KINDS || !pos.is_finite() || !vel.is_finite() {
+        if !self.live() || !pos.is_finite() || !vel.is_finite() {
             return;
         }
         let Some(thrower) = self.players.get_mut(&thrower_id) else {
             return;
         };
-        if !thrower.alive || pos.distance(thrower.pos) > 6.0 {
+        if !thrower.alive || kind != thrower.grenade || pos.distance(thrower.pos) > 6.0 {
             return;
         }
         let fuse = if kind == FRAG {
@@ -694,14 +728,53 @@ impl Server {
             };
             fuse
         } else {
-            let count = &mut thrower.grenades[kind as usize];
-            if *count < 0.9 {
+            if thrower.grenades < 0.9 {
                 return;
             }
-            *count = (*count - 1.0).max(0.0);
+            thrower.grenades = (thrower.grenades - 1.0).max(0.0);
             grenade(kind).fuse
         };
         self.launch_grenade(thrower_id, kind, pos, vel.clamp_length_max(70.0), fuse);
+    }
+
+    /// Passes a ping on to the pinger's teammates, and nobody else. A ping
+    /// on somebody who is not a living enemy becomes a ping on the spot.
+    fn handle_ping(&mut self, from: PlayerId, target: Option<PlayerId>, pos: [f32; 3]) {
+        let team_mode = is_team_mode(self.settings.mode);
+        // Free for all: nobody is on your side, so nobody is told.
+        if !team_mode || self.phase != Phase::Playing || !Vec3::from(pos).is_finite() {
+            return;
+        }
+        let Some(pinger) = self.players.get_mut(&from) else {
+            return;
+        };
+        if !pinger.alive || pinger.ping_cooldown > 0.0 {
+            return;
+        }
+        // A little slack for network jitter.
+        pinger.ping_cooldown = PING_COOLDOWN * 0.8;
+        let team = pinger.team;
+        let target = target.filter(|id| {
+            self.players
+                .get(id)
+                .is_some_and(|enemy| *id != from && enemy.alive && enemy.team != team)
+        });
+        let msg = encode(&ServerMsg::Ping { from, target, pos });
+        for mate in self.teammates_of(from) {
+            self.renet.send_message(mate, CH_RELIABLE, msg.clone());
+        }
+    }
+
+    /// The people (not bots) on the same team as `id`, apart from `id`.
+    fn teammates_of(&self, id: PlayerId) -> Vec<PlayerId> {
+        let Some(team) = self.players.get(&id).map(|p| p.team) else {
+            return Vec::new();
+        };
+        self.players
+            .iter()
+            .filter(|(other, p)| **other != id && p.team == team && p.bot.is_none())
+            .map(|(other, _)| *other)
+            .collect()
     }
 
     fn launch_grenade(&mut self, owner: PlayerId, kind: GrenadeKind, pos: Vec3, vel: Vec3, fuse: f32) {
@@ -931,6 +1004,7 @@ impl Server {
     fn start_match(&mut self) {
         println!("[server] match started");
         self.phase = Phase::Playing;
+        self.countdown = COUNTDOWN;
         self.time_left = self.settings.match_minutes * 60.0;
         self.grenades.clear();
         self.smokes.clear();
@@ -952,6 +1026,7 @@ impl Server {
         self.broadcast(&ServerMsg::MatchStarted {
             score_limit: score_limit(self.settings.mode, self.settings.frag_limit),
             time_left: self.time_left,
+            countdown: self.countdown,
         });
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         for id in ids {
@@ -1032,12 +1107,16 @@ impl Server {
         player.yaw = yaw;
         player.pitch = 0.0;
         player.flags = 0;
-        player.grenades = GRENADES.map(|stats| stats.max);
+        // Bots carry one too, though they never throw it.
+        player.grenade = player.loadout_grenade;
+        player.grenades = grenade(player.grenade).max;
         player.cooking = None;
+        player.ping_cooldown = 0.0;
         player.fire_credit = MAX_FIRE_CREDIT;
         player.since_damage = 0.0;
         player.spawn_seq += 1;
         let spawn_seq = player.spawn_seq;
+        let carried = player.grenade;
         if let Some(bot) = &mut player.bot {
             // A fresh bot with a random gun, ready once it is drawn.
             *bot = Bot::new();
@@ -1051,6 +1130,7 @@ impl Server {
             pos: pos.to_array(),
             yaw,
             spawn_seq,
+            grenade: carried,
         });
     }
 
@@ -1207,7 +1287,10 @@ impl Server {
             stab_ready: false,
             since_damage: 0.0,
             regen: 0.0,
-            grenades: [0.0; GRENADE_KINDS],
+            grenade: FRAG,
+            grenades: 0.0,
+            loadout_grenade: FRAG,
+            ping_cooldown: 0.0,
             cooking: None,
             bot,
         }
@@ -1528,6 +1611,7 @@ mod tests {
         };
         let mut server = Server::bind(settings).unwrap();
         server.start_match();
+        server.countdown = 0.0;
         // A minute of play.
         for _ in 0..60 * 60 {
             server.update_match(1.0 / 60.0);
@@ -1551,6 +1635,7 @@ mod tests {
         let human = server.new_player("Target".into(), None);
         server.players.insert(1000, human);
         server.start_match();
+        server.countdown = 0.0;
         let bot = server.players.iter().find(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).unwrap();
         // A spawn point with open ground 12 m in some direction.
         let (bot_pos, target_pos) = server
@@ -1584,18 +1669,25 @@ mod tests {
         assert!(hurt, "the bot never hit the person in front of it");
     }
 
-    /// A server with one person in a running match, and that person's id.
-    fn match_with_one_person() -> (Server, PlayerId) {
+    /// A server with one person in a running match (the countdown over),
+    /// carrying `grenade`, and that person's id.
+    fn match_with_one_person_carrying(grenade: GrenadeKind) -> (Server, PlayerId) {
         let mut server = Server::bind(ServerSettings {
             port: 0,
             ..ServerSettings::default()
         })
         .unwrap();
         server.join_counter += 1;
-        let person = server.new_player("Cook".into(), None);
+        let mut person = server.new_player("Cook".into(), None);
+        person.loadout_grenade = grenade;
         server.players.insert(1000, person);
         server.start_match();
+        server.countdown = 0.0;
         (server, 1000)
+    }
+
+    fn match_with_one_person() -> (Server, PlayerId) {
+        match_with_one_person_carrying(FRAG)
     }
 
     #[test]
@@ -1630,7 +1722,7 @@ mod tests {
 
     #[test]
     fn smoke_goes_off_when_it_lands_and_only_one_is_carried() {
-        let (mut server, id) = match_with_one_person();
+        let (mut server, id) = match_with_one_person_carrying(SMOKE);
         let pos = server.players[&id].pos;
         // Thrown at the floor.
         server.handle_grenade(id, SMOKE, pos.to_array(), [0.0, -10.0, 0.0]);
@@ -1646,7 +1738,7 @@ mod tests {
 
     #[test]
     fn a_flash_goes_off_on_hitting_somebody() {
-        let (mut server, id) = match_with_one_person();
+        let (mut server, id) = match_with_one_person_carrying(FLASH);
         server.join_counter += 1;
         let other = server.new_player("Target".into(), None);
         server.players.insert(1001, other);
@@ -1661,6 +1753,74 @@ mod tests {
             server.update_match(1.0 / 60.0);
         }
         assert!(server.grenades.is_empty(), "the flash flew through the person it hit");
+    }
+
+    #[test]
+    fn only_the_grenade_in_the_loadout_can_be_thrown() {
+        let (mut server, id) = match_with_one_person_carrying(SMOKE);
+        let pos = server.players[&id].pos.to_array();
+        server.handle_grenade(id, FLASH, pos, [0.0, -10.0, 0.0]);
+        server.handle_cook(id);
+        assert!(server.grenades.is_empty() && server.players[&id].cooking.is_none());
+        server.handle_grenade(id, SMOKE, pos, [0.0, -10.0, 0.0]);
+        assert_eq!(server.grenades.len(), 1);
+        // A new pick is carried from the next life on.
+        server.handle_message(id, ClientMsg::Loadout { grenade: FLASH });
+        assert_eq!(server.players[&id].grenade, SMOKE);
+        server.spawn_player(id);
+        assert_eq!(server.players[&id].grenade, FLASH);
+        assert_eq!(server.players[&id].grenades, grenade(FLASH).max);
+    }
+
+    #[test]
+    fn nothing_happens_until_the_countdown_is_over() {
+        let (mut server, id) = match_with_one_person();
+        server.countdown = COUNTDOWN;
+        let time_left = server.time_left;
+        server.handle_cook(id);
+        assert!(server.players[&id].cooking.is_none(), "a pin was pulled during the countdown");
+        for _ in 0..60 * 4 {
+            server.update_match(1.0 / 60.0);
+        }
+        assert_eq!(server.time_left, time_left, "the clock ran during the countdown");
+        for _ in 0..60 * 2 {
+            server.update_match(1.0 / 60.0);
+        }
+        assert!(server.countdown <= 0.0 && server.time_left < time_left);
+        server.handle_cook(id);
+        assert!(server.players[&id].cooking.is_some());
+    }
+
+    #[test]
+    fn pings_go_to_teammates_only() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode: MODE_TEAMS,
+            bots: 1,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for (id, team) in [(1000, 0), (1001, 0), (1002, 1)] {
+            server.join_counter += 1;
+            let mut person = server.new_player(format!("P{id}"), None);
+            person.team = team;
+            server.players.insert(id, person);
+        }
+        for bot in server.players.values_mut().filter(|p| p.bot.is_some()) {
+            bot.team = 0;
+        }
+        assert_eq!(server.teammates_of(1000), vec![1001]);
+        assert_eq!(server.teammates_of(1002), Vec::<PlayerId>::new());
+        server.start_match();
+        server.handle_ping(1000, Some(1002), [0.0; 3]);
+        assert!(server.players[&1000].ping_cooldown > 0.0, "the ping was not taken");
+    }
+
+    #[test]
+    fn every_grenade_fits_on_the_hud() {
+        for stats in &GRENADES {
+            assert!(stats.max as usize <= MOST_GRENADES, "{}", stats.name);
+        }
     }
 
     #[test]

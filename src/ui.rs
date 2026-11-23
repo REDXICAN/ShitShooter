@@ -20,7 +20,7 @@ use crate::{
     gun_model::FittedModels,
     map::MAP_NAMES,
     net::{self, Connection, MenuStatus, Session},
-    player::{Controls, DASH_COOLDOWN, LocalPlayer, WHEEL_DIRS, wheel_choice},
+    player::{Controls, DASH_COOLDOWN, LocalPlayer},
     protocol::*,
     server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
@@ -94,7 +94,7 @@ impl Plugin for UiPlugin {
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_loadout_buttons,
                     update_rosters,
-                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_scope_view, update_key_hints, update_wheel)
+                    (update_hud, update_hud_shapes, update_overlays, update_crosshair, update_scope_view, update_key_hints)
                         .run_if(in_state(AppState::Playing)),
                 ),
             );
@@ -816,11 +816,31 @@ fn sight_button(slot: usize) -> impl Bundle {
     )
 }
 
+/// The text of the button that shows, and changes, the grenade carried.
+#[derive(Component)]
+struct GrenadeText;
+
+/// A button that picks the next kind of grenade to carry.
+fn grenade_button() -> impl Bundle {
+    (
+        button_box(ButtonKind::Normal, false),
+        children![(label("", 18.0, TEXT), Pickable::IGNORE, GrenadeText)],
+        observe(|_: On<Activate>, mut settings: ResMut<Settings>| {
+            settings.cycle_grenade();
+            settings.save();
+        }),
+    )
+}
+
 fn update_loadout_buttons(
     settings: Res<Settings>,
-    mut guns: Query<(&LoadoutText, &mut Text), Without<SightText>>,
-    mut sights: Query<(&SightText, &mut Text), Without<LoadoutText>>,
+    mut guns: Query<(&LoadoutText, &mut Text), (Without<SightText>, Without<GrenadeText>)>,
+    mut sights: Query<(&SightText, &mut Text), (Without<LoadoutText>, Without<GrenadeText>)>,
+    mut grenades: Query<&mut Text, (With<GrenadeText>, Without<LoadoutText>, Without<SightText>)>,
 ) {
+    for mut text in &mut grenades {
+        set_text(&mut text, format!("Grenade: {}", grenade(settings.grenade).name));
+    }
     for (slot, mut text) in &mut guns {
         let title = if slot.0 == 0 { "Primary" } else { "Secondary" };
         set_text(&mut text, format!("{title}: {}", weapon(settings.gun(slot.0)).name));
@@ -963,6 +983,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                                     sight_button(0),
                                     loadout_button(1),
                                     sight_button(1),
+                                    grenade_button(),
                                     (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
                                 ],
                             ),
@@ -1058,18 +1079,20 @@ enum Hud {
     /// The key of one of the three weapon slots, and what is in it.
     SlotKey(usize),
     SlotName(usize),
-    /// The grenade key, and the name of each kind of grenade.
+    /// The grenade key, and the name of the grenade carried.
     GrenadeKey,
-    GrenadeName(usize),
+    GrenadeName,
     /// Under the crosshair: the grenade in hand, and what a click does with it
     /// (or a cooking frag's fuse).
     Hand,
-    /// A kind of grenade on the wheel.
-    WheelName(usize),
     /// "FRAGGED somebody".
     Kill,
     /// Streaks and revenge, under the kill line.
     Banner,
+    /// The seconds left before the match starts, then "GO".
+    Countdown,
+    /// The line over the countdown.
+    CountdownLabel,
 }
 
 /// The part of a bar that grows and shrinks.
@@ -1082,8 +1105,8 @@ enum Bar {
     Dash,
     /// Rounds left in the magazine, or how far along the reload is.
     Ammo,
-    /// One grenade (kind, which one), filling up as it recharges.
-    Grenade(usize, usize),
+    /// One of the grenades carried, filling up as it recharges.
+    Grenade(usize),
 }
 
 /// The box around one of the three weapon slots; lit when it is in hand.
@@ -1232,10 +1255,14 @@ fn chip_node() -> Node {
     }
 }
 
-/// One bar per grenade of a kind carried, each filling up as it recharges.
-fn grenade_bars(kind: usize) -> impl Bundle {
-    let bars = (0..GRENADES[kind].max as usize)
-        .map(move |index| (bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(kind, index), TEXT)]));
+/// A slot for each grenade that can be carried, filling up as it recharges.
+/// Slots beyond what the grenade in hand allows are hidden.
+#[derive(Component)]
+struct GrenadeSlot(usize);
+
+fn grenade_bars() -> impl Bundle {
+    let bars = (0..MOST_GRENADES)
+        .map(|index| (GrenadeSlot(index), bar_track(px(14), 8.0), children![bar_fill(Bar::Grenade(index), TEXT)]));
     (
         Node {
             column_gap: px(4),
@@ -1245,124 +1272,9 @@ fn grenade_bars(kind: usize) -> impl Bundle {
     )
 }
 
-/// A kind of grenade: its name and how many are carried.
-fn grenade_chip(kind: usize) -> impl Bundle {
-    (
-        chip_node(),
-        children![hud_text(14.0, DIM, Hud::GrenadeName(kind)), grenade_bars(kind)],
-    )
-}
-
-/// The grenade wheel, open while the grenade key is held.
-#[derive(Component)]
-struct WheelRoot;
-/// One kind of grenade on the wheel; lit when the cursor picks it.
-#[derive(Component)]
-struct WheelOption(usize);
-/// The dot that follows the mouse on the wheel.
-#[derive(Component)]
-struct WheelCursor;
-
-/// Across the whole wheel, and from its middle to the middle of an option.
-const WHEEL_SIZE: f32 = 320.0;
-const WHEEL_REACH: f32 = 105.0;
-const WHEEL_OPTION: Vec2 = Vec2::new(116.0, 58.0);
-
-fn wheel_option(kind: usize) -> impl Bundle {
-    let at = Vec2::splat(WHEEL_SIZE / 2.0) + WHEEL_DIRS[kind] * WHEEL_REACH - WHEEL_OPTION / 2.0;
-    (
-        WheelOption(kind),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(at.x),
-            top: px(at.y),
-            width: px(WHEEL_OPTION.x),
-            height: px(WHEEL_OPTION.y),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            row_gap: px(6),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(8)),
-            ..default()
-        },
-        BackgroundColor(HUD_PANEL),
-        BorderColor::all(Color::NONE),
-        children![hud_text(16.0, TEXT, Hud::WheelName(kind)), grenade_bars(kind)],
-    )
-}
-
-fn spawn_wheel(commands: &mut Commands) {
-    commands.spawn((
-        hud_layer(),
-        children![(
-            WheelRoot,
-            Node {
-                width: px(WHEEL_SIZE),
-                height: px(WHEEL_SIZE),
-                display: Display::None,
-                ..default()
-            },
-            children![
-                (
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: percent(100),
-                        height: percent(100),
-                        border_radius: BorderRadius::all(px(WHEEL_SIZE / 2.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.03, 0.04, 0.07, 0.35)),
-                ),
-                wheel_option(0),
-                wheel_option(1),
-                wheel_option(2),
-                (
-                    WheelCursor,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: px(10),
-                        height: px(10),
-                        border_radius: BorderRadius::all(px(5)),
-                        ..default()
-                    },
-                    BackgroundColor(ACCENT),
-                ),
-            ],
-        )],
-    ));
-}
-
-/// Shows the wheel while it is open, with the option the cursor picks lit up
-/// and the ones that are not ready dimmed.
-fn update_wheel(
-    player: Res<LocalPlayer>,
-    mut root: Single<&mut Node, With<WheelRoot>>,
-    mut cursor_dot: Single<&mut Node, (With<WheelCursor>, Without<WheelRoot>)>,
-    mut options: Query<(&WheelOption, &mut BackgroundColor, &mut BorderColor)>,
-) {
-    set_shown(&mut root, player.wheel.is_some());
-    let Some(cursor) = player.wheel else {
-        return;
-    };
-    let at = Vec2::splat(WHEEL_SIZE / 2.0) + cursor * WHEEL_REACH - Vec2::splat(5.0);
-    if cursor_dot.left != px(at.x) || cursor_dot.top != px(at.y) {
-        cursor_dot.left = px(at.x);
-        cursor_dot.top = px(at.y);
-    }
-    let chosen = wheel_choice(cursor, player.last_grenade) as usize;
-    for (option, mut background, mut border) in &mut options {
-        let ready = player.grenades[option.0] >= 1.0;
-        let (fill, edge) = match (option.0 == chosen, ready) {
-            (true, true) => (Color::srgba(1.0, 0.62, 0.2, 0.25), ACCENT),
-            (true, false) => (Color::srgba(1.0, 1.0, 1.0, 0.08), DIM),
-            (false, _) => (HUD_PANEL, Color::NONE),
-        };
-        if background.0 != fill {
-            background.0 = fill;
-            *border = BorderColor::all(edge);
-        }
-    }
+/// The grenade carried: its name and how many.
+fn grenade_chip() -> impl Bundle {
+    (chip_node(), children![hud_text(14.0, DIM, Hud::GrenadeName), grenade_bars()])
 }
 
 /// A weapon slot: its key and what is in it.
@@ -1499,7 +1411,15 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
     // The grenade in hand, just under the crosshair.
     commands.spawn((hud_line(55.0), children![hud_text(18.0, ACCENT, Hud::Hand)]));
-    spawn_wheel(&mut commands);
+
+    // The countdown before the match, big, above the crosshair.
+    commands.spawn((
+        hud_line(26.0),
+        children![
+            hud_text(20.0, TEXT, Hud::CountdownLabel),
+            hud_text(96.0, ACCENT, Hud::Countdown),
+        ],
+    ));
 
     // Death / respawn message, a bit above the middle of the screen.
     commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
@@ -1642,12 +1562,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                         column_gap: px(4),
                         ..default()
                     },
-                    children![
-                        hud_text(12.0, DIM, Hud::GrenadeKey),
-                        grenade_chip(0),
-                        grenade_chip(1),
-                        grenade_chip(2),
-                    ],
+                    children![hud_text(12.0, DIM, Hud::GrenadeKey), grenade_chip()],
                 ),
                 (
                     Node {
@@ -1753,36 +1668,39 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                                 });
                             }
                         });
+                        // Side by side rather than stacked, so it all fits a 720p window.
                         cards.spawn((
                             Node {
-                                flex_direction: FlexDirection::Column,
-                                row_gap: px(14),
-                                width: px(330),
-                                ..default()
+                                width: px(300),
+                                ..card_node()
                             },
+                            BackgroundColor(CARD),
+                            BorderColor::all(HUD_EDGE),
                             children![
-                                (
-                                    card(),
-                                    children![
-                                        section("Loadout"),
-                                        loadout_button(0),
-                                        sight_button(0),
-                                        loadout_button(1),
-                                        sight_button(1),
-                                        label("Handed out the next time you spawn.", 14.0, DIM),
-                                    ],
-                                ),
-                                (
-                                    card(),
-                                    children![
-                                        section("Tips"),
-                                        label("Strafe and turn in the air to build speed.", 14.0, DIM),
-                                        label("Green pads launch you: arrows throw you their way, plain ones keep your momentum.", 14.0, DIM),
-                                        label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
-                                        label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
-                                        label(format!("Armor takes damage before health and never comes back by itself. You spawn with {START_ARMOR}; blue plates give {ARMOR_PICKUP} more, up to {MAX_ARMOR}."), 14.0, DIM),
-                                    ],
-                                ),
+                                section("Loadout"),
+                                loadout_button(0),
+                                sight_button(0),
+                                loadout_button(1),
+                                sight_button(1),
+                                grenade_button(),
+                                label("Handed out the next time you spawn.", 14.0, DIM),
+                            ],
+                        ));
+                        cards.spawn((
+                            Node {
+                                width: px(260),
+                                ..card_node()
+                            },
+                            BackgroundColor(CARD),
+                            BorderColor::all(HUD_EDGE),
+                            children![
+                                section("Tips"),
+                                label("Strafe and turn in the air to build speed.", 14.0, DIM),
+                                label("Green pads launch you: arrows throw you their way, plain ones keep your momentum.", 14.0, DIM),
+                                label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
+                                label("Team modes: your pings show only to your team.", 14.0, DIM),
+                                label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
+                                label(format!("Armor takes damage before health and never comes back by itself. You spawn with {START_ARMOR}; blue plates give {ARMOR_PICKUP} more, up to {MAX_ARMOR}."), 14.0, DIM),
                             ],
                         ));
                     });
@@ -1800,7 +1718,8 @@ const KEY_HINTS: &[(&[Action], &str)] = &[
     (&[Action::Fire], "Fire"),
     (&[Action::Aim], "Aim down sights"),
     (&[Action::Reload], "Reload"),
-    (&[Action::Grenade], "Grenades (hold for the wheel), click to throw"),
+    (&[Action::Grenade], "Take out your grenade, click to throw"),
+    (&[Action::Ping], "Ping an enemy (or a spot) for your team"),
     (&[Action::Primary, Action::Secondary, Action::Knife], "Weapons"),
     (&[Action::PreviousWeapon, Action::NextWeapon], "Previous / next weapon"),
     (&[Action::Scores], "Scoreboard"),
@@ -1979,15 +1898,11 @@ fn update_hud(
                 if slot == player.slot { TEXT } else { DIM },
             ),
             Hud::GrenadeKey => (settings.bind(Action::Grenade).display().to_string(), DIM),
-            Hud::WheelName(kind) => (
-                GRENADES[kind].name.to_uppercase(),
-                if player.grenades[kind] >= 1.0 { TEXT } else { DIM },
-            ),
-            Hud::GrenadeName(kind) => (
-                GRENADES[kind].name.to_uppercase(),
-                if player.hand.is_some_and(|hand| hand.kind as usize == kind) {
+            Hud::GrenadeName => (
+                grenade(player.grenade).name.to_uppercase(),
+                if player.hand.is_some() {
                     ACCENT
-                } else if player.grenades[kind] >= 1.0 {
+                } else if player.grenades >= 1.0 {
                     TEXT
                 } else {
                     DIM
@@ -2007,6 +1922,16 @@ fn update_hud(
             },
             Hud::Kill => notice(&notices.kill, TEXT),
             Hud::Banner => notice(&notices.banner, ACCENT),
+            Hud::Countdown => match session.countdown {
+                left if left > 0.0 => (format!("{}", left.ceil() as u32), ACCENT),
+                // "GO" for a moment once it is over, fading out.
+                left if left > -0.8 => ("GO!".to_string(), GOOD.with_alpha(((left + 0.8) / 0.4).min(1.0))),
+                _ => (String::new(), ACCENT),
+            },
+            Hud::CountdownLabel => (
+                if session.frozen() { "MATCH STARTS IN" } else { "" }.to_string(),
+                TEXT,
+            ),
         };
         set_text(&mut text, value);
         if color.0 != wanted {
@@ -2024,7 +1949,12 @@ fn update_hud_shapes(
     mut bars: Query<(&Bar, &mut Node, &mut BackgroundColor)>,
     mut chips: Query<(&SlotChip, &mut BackgroundColor, &mut BorderColor), Without<Bar>>,
     mut rows: Query<(&FeedRow, &mut Node, &mut BackgroundColor), (Without<Bar>, Without<SlotChip>)>,
+    mut grenade_slots: Query<(&GrenadeSlot, &mut Node), (Without<Bar>, Without<FeedRow>)>,
 ) {
+    let carried = grenade(player.grenade).max as usize;
+    for (slot, mut node) in &mut grenade_slots {
+        set_shown(&mut node, slot.0 < carried);
+    }
     let health = if player.alive { player.health.max(0) } else { 0 };
     let health_part = health as f32 / MAX_HEALTH as f32;
     // What was just lost drains away behind the bar; healing catches up at once.
@@ -2058,8 +1988,8 @@ fn update_hud_shapes(
             Bar::Armor => (armor_part, ARMOR),
             Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
             Bar::Ammo => (ammo_part, ammo_color),
-            Bar::Grenade(kind, index) => {
-                let part = player.grenades[kind] - index as f32;
+            Bar::Grenade(index) => {
+                let part = player.grenades - index as f32;
                 (part, if part >= 1.0 { TEXT } else { DIM })
             }
         };

@@ -83,6 +83,12 @@ pub enum Sound {
     ArmorBroken,
     /// Armor picked up: ours, or heard from where somebody else took it.
     ArmorPickup,
+    /// One second of the countdown before a match.
+    Countdown,
+    /// The countdown is over: go.
+    Go,
+    /// We or a teammate pinged something.
+    Ping,
 }
 
 /// Ask for a sound to be played. `at: None` is our own sound (not spatial);
@@ -106,6 +112,8 @@ struct Sounds {
     charge: Handle<AudioSource>,
     hiss: Handle<AudioSource>,
     ring: Handle<AudioSource>,
+    beep: Handle<AudioSource>,
+    blip: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
     rng: u32,
 }
@@ -128,6 +136,8 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         charge: add(synth_charge()),
         hiss: add(synth_hiss()),
         ring: add(synth_ring()),
+        beep: add(synth_beep()),
+        blip: add(synth_blip()),
         rng: 0x2545_f491,
     });
 }
@@ -169,6 +179,10 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             // Played low and slow it sounds heavier: something of ours gave way.
             Sound::ArmorBroken => (sounds.shatter.clone(), 1.0, 0.68),
             Sound::ArmorPickup => (sounds.charge.clone(), if own { 0.6 } else { 1.0 }, 1.0),
+            Sound::Countdown => (sounds.beep.clone(), 0.45, 1.0),
+            // An octave up, and louder.
+            Sound::Go => (sounds.beep.clone(), 0.7, 2.0),
+            Sound::Ping => (sounds.blip.clone(), 0.5, 1.0),
         };
         let settings = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(volume))
@@ -313,6 +327,28 @@ fn synth_tick() -> Vec<f32> {
     samples(0.05, |t| {
         let tone = (TAU * 2400.0 * t).sin() + 0.5 * (TAU * 3600.0 * t).sin();
         tone * (-t * 90.0).exp() * (t * 2000.0).min(1.0) * 0.6
+    })
+}
+
+/// A short, plain electronic beep.
+fn synth_beep() -> Vec<f32> {
+    samples(0.18, |t| {
+        let tone = (TAU * 740.0 * t).sin() + 0.25 * (TAU * 1480.0 * t).sin();
+        tone * (t * 600.0).min(1.0) * ((0.18 - t) * 40.0).min(1.0) * 0.45
+    })
+}
+
+/// Two quick high notes, falling: "over here".
+fn synth_blip() -> Vec<f32> {
+    samples(0.22, |t| {
+        let note = |start: f32, frequency: f32| {
+            if t < start {
+                return 0.0;
+            }
+            let since = t - start;
+            (TAU * frequency * since).sin() * (-since * 30.0).exp() * (since * 1500.0).min(1.0)
+        };
+        (note(0.0, 1975.5) + note(0.06, 1318.5)) * 0.45
     })
 }
 

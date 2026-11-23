@@ -12,9 +12,11 @@ use renet_netcode::{ClientAuthentication, NetcodeClientTransport};
 
 use crate::{
     AppState,
+    audio::{Sound, SoundCue},
     map::Map,
     protocol::*,
     server::{Server, ServerHandle, ServerSettings},
+    settings::Settings,
     world::GameMap,
 };
 
@@ -28,7 +30,7 @@ impl Plugin for NetPlugin {
             .add_message::<SnapshotMsg>()
             .add_systems(
                 PreUpdate,
-                (receive, update_session)
+                (receive, send_loadout, update_session)
                     .chain()
                     .run_if(resource_exists::<Connection>),
             )
@@ -68,6 +70,9 @@ pub struct Session {
     /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
     pub armor_taken: u32,
     pub time_left: f32,
+    /// Seconds of the starting countdown left: nobody can move or shoot while
+    /// it is above 0. It keeps going down to -1, so "GO" can show for a moment.
+    pub countdown: f32,
     /// Result line of the previous match, shown in the lobby.
     pub last_result: Option<String>,
     /// Address to tell friends about, when hosting.
@@ -91,6 +96,11 @@ impl Session {
         is_team_mode(self.mode)
     }
 
+    /// The starting countdown is running.
+    pub fn frozen(&self) -> bool {
+        self.countdown > 0.0
+    }
+
     pub fn team_of(&self, id: PlayerId) -> u8 {
         self.roster.iter().find(|p| p.id == id).map_or(0, |p| p.team & 1)
     }
@@ -108,6 +118,8 @@ pub struct Connection {
     transport: NetcodeClientTransport,
     name: String,
     said_hello: bool,
+    /// The grenade the server was last told we carry.
+    loadout_sent: Option<GrenadeKind>,
 }
 
 impl Connection {
@@ -130,6 +142,7 @@ impl Connection {
             transport,
             name: name.to_string(),
             said_hello: false,
+            loadout_sent: None,
         })
     }
 
@@ -255,13 +268,38 @@ fn receive(
     }
 }
 
+/// Tells the server which grenade we carry: once we are in, and whenever
+/// it is changed in the loadout.
+fn send_loadout(settings: Res<Settings>, mut connection: ResMut<Connection>) {
+    if connection.said_hello && connection.loadout_sent != Some(settings.grenade) {
+        connection.loadout_sent = Some(settings.grenade);
+        connection.send(&ClientMsg::Loadout {
+            grenade: settings.grenade,
+        });
+    }
+}
+
 fn update_session(
+    time: Res<Time>,
     mut messages: MessageReader<NetMsg>,
     mut snapshots: MessageReader<SnapshotMsg>,
     mut session: ResMut<Session>,
     mut game_map: ResMut<GameMap>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut sounds: MessageWriter<SoundCue>,
 ) {
+    // A beep for each second of the countdown, and a higher one for the start.
+    if session.countdown > -1.0 {
+        let before = session.countdown;
+        session.countdown = (before - time.delta_secs()).max(-1.0);
+        let after = session.countdown;
+        if before > 0.0 && before.ceil() != after.ceil() {
+            sounds.write(SoundCue {
+                sound: if after <= 0.0 { Sound::Go } else { Sound::Countdown },
+                at: None,
+            });
+        }
+    }
     for NetMsg(msg) in messages.read() {
         match msg {
             ServerMsg::Welcome { id } => {
@@ -282,7 +320,19 @@ fn update_session(
                     game_map.0 = Map::by_id(*map);
                 }
             }
-            ServerMsg::MatchStarted { score_limit, time_left } => {
+            ServerMsg::MatchStarted {
+                score_limit,
+                time_left,
+                countdown,
+            } => {
+                // Joining a match already under way: no countdown, and no "GO".
+                session.countdown = if *countdown > 0.0 { *countdown } else { -1.0 };
+                if session.frozen() {
+                    sounds.write(SoundCue {
+                        sound: Sound::Countdown,
+                        at: None,
+                    });
+                }
                 session.score_limit = *score_limit;
                 session.team_scores = [0, 0];
                 session.hill = HILL_EMPTY;
@@ -302,6 +352,7 @@ fn update_session(
                     Winner::Nobody => "The last match ended without a winner.".to_string(),
                 });
                 session.armor_taken = 0;
+                session.countdown = -1.0;
                 next_state.set(AppState::Lobby);
             }
             // Hidden at once; the next snapshot says the same.

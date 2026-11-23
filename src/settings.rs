@@ -22,6 +22,7 @@ use bevy::{
 use crate::{
     AppState, LaunchArgs,
     player::Controls,
+    protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
         GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, WeaponId, next_gun, sight,
         sight_on, sights_for, takes_sights, weapon,
@@ -84,6 +85,7 @@ pub enum Action {
     Aim,
     Reload,
     Grenade,
+    Ping,
     Primary,
     Secondary,
     Knife,
@@ -93,7 +95,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 17] = [
+    pub const ALL: [Action; 18] = [
         Action::Forward,
         Action::Back,
         Action::Left,
@@ -105,6 +107,7 @@ impl Action {
         Action::Aim,
         Action::Reload,
         Action::Grenade,
+        Action::Ping,
         Action::Primary,
         Action::Secondary,
         Action::Knife,
@@ -127,7 +130,8 @@ impl Action {
             Action::Fire => ("Fire", "fire", Mouse(MouseButton::Left)),
             Action::Aim => ("Aim down sights", "aim", Mouse(MouseButton::Right)),
             Action::Reload => ("Reload", "reload", Key(KeyCode::KeyR)),
-            Action::Grenade => ("Grenade (hold: wheel)", "grenade", Key(KeyCode::KeyG)),
+            Action::Grenade => ("Grenade", "grenade", Key(KeyCode::KeyG)),
+            Action::Ping => ("Ping enemy", "ping", Mouse(MouseButton::Middle)),
             Action::Primary => ("Primary gun", "primary", Key(KeyCode::Digit1)),
             Action::Secondary => ("Secondary gun", "secondary", Key(KeyCode::Digit2)),
             Action::Knife => ("Knife", "knife", Key(KeyCode::Digit3)),
@@ -257,6 +261,8 @@ pub struct Settings {
     /// The sight picked for each gun, by weapon id. Guns without a sight
     /// mount always have their iron sights.
     pub sights: [SightId; GUN_COUNT as usize],
+    /// The kind of grenade carried.
+    pub grenade: GrenadeKind,
     binds: [Bind; Action::ALL.len()],
     /// False during the self-test, which must not touch the player's file.
     persist: bool,
@@ -276,6 +282,7 @@ impl Default for Settings {
             primary: RIFLE,
             secondary: PISTOL,
             sights: default_sights(),
+            grenade: FRAG,
             binds: Action::ALL.map(|action| action.info().2),
             persist: false,
         }
@@ -367,6 +374,7 @@ impl Settings {
             primary: self.primary,
             secondary: self.secondary,
             sights: self.sights,
+            grenade: self.grenade,
             persist: self.persist,
             ..defaults
         };
@@ -384,6 +392,11 @@ impl Settings {
     /// The gun in a slot (0 = primary, 1 = secondary).
     pub fn gun(&self, slot: usize) -> WeaponId {
         if slot == 0 { self.primary } else { self.secondary }
+    }
+
+    /// Picks the next kind of grenade to carry.
+    pub fn cycle_grenade(&mut self) {
+        self.grenade = (self.grenade + 1) % GRENADE_KINDS as GrenadeKind;
     }
 
     /// The sight a gun is handed out with.
@@ -448,6 +461,11 @@ impl Settings {
                 "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
+                "grenade" => {
+                    if let Some(kind) = GRENADES.iter().position(|g| g.name.eq_ignore_ascii_case(value)) {
+                        settings.grenade = kind as GrenadeKind;
+                    }
+                }
                 _ if key.starts_with("sight.") => {
                     let gun = gun_named(&key["sight.".len()..]);
                     let picked = SIGHTS.iter().position(|s| s.name.eq_ignore_ascii_case(value));
@@ -480,10 +498,11 @@ impl Settings {
             self.name, self.address, self.port, self.sensitivity, self.ads_sensitivity, self.fov, self.volume
         );
         text.push_str(&format!(
-            "fullscreen = {}\nprimary = {}\nsecondary = {}\n",
+            "fullscreen = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
             self.fullscreen,
             weapon(self.primary).name,
-            weapon(self.secondary).name
+            weapon(self.secondary).name,
+            GRENADES[self.grenade as usize % GRENADE_KINDS].name
         ));
         for gun in (0..GUN_COUNT).filter(|gun| takes_sights(*gun)) {
             text.push_str(&format!("sight.{} = {}
@@ -937,6 +956,7 @@ mod tests {
             primary: 3,
             secondary: 1,
             sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, RED_DOT, RED_DOT],
+            grenade: crate::protocol::SMOKE,
             ..default()
         };
         settings.set_bind(Action::Grenade, Bind::Mouse(MouseButton::Middle));
@@ -981,6 +1001,20 @@ sight.Pistol = Scope
         assert_eq!(settings.sight_for(PISTOL), REFLEX);
         settings.cycle_sight(1);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
+    }
+
+    #[test]
+    fn cycling_the_grenade_goes_through_every_kind() {
+        let mut settings = Settings::default();
+        let mut seen = Vec::new();
+        for _ in 0..GRENADE_KINDS {
+            settings.cycle_grenade();
+            seen.push(settings.grenade);
+        }
+        seen.sort();
+        assert_eq!(seen, (0..GRENADE_KINDS as GrenadeKind).collect::<Vec<_>>());
+        assert_eq!(Settings::parse("grenade = flash\n").grenade, crate::protocol::FLASH);
+        assert_eq!(Settings::parse("grenade = banana\n").grenade, FRAG);
     }
 
     #[test]

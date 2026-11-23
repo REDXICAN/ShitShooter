@@ -192,17 +192,13 @@ pub struct LocalPlayer {
     pub aim: f32,
     /// Seconds until the reload finishes; 0 when not reloading.
     pub reload: f32,
-    /// Grenades of each kind in hand (whole ones can be thrown; the fraction
-    /// is the recharge).
-    pub grenades: [f32; GRENADE_KINDS],
+    /// The kind of grenade carried this life (picked in the loadout).
+    pub grenade: GrenadeKind,
+    /// How many of it are carried (whole ones can be thrown; the fraction is
+    /// the recharge).
+    pub grenades: f32,
     /// The grenade in hand, ready to throw instead of the weapon.
     pub hand: Option<InHand>,
-    /// While the grenade key is held, the wheel is open and the mouse moves
-    /// this cursor instead of the view: an offset from the middle of the
-    /// wheel, at most 1 long (screen directions, y down).
-    pub wheel: Option<Vec2>,
-    /// What the wheel picks if the mouse is not moved.
-    pub last_grenade: GrenadeKind,
     /// 1 right after throwing a grenade, decays to 0. Drives the gun dip.
     pub throw_anim: f32,
     /// 0 -> 1 as a cooked grenade is raised and the gun lowered.
@@ -243,10 +239,9 @@ impl Default for LocalPlayer {
             view_height: STAND_EYE,
             aim: 0.0,
             reload: 0.0,
-            grenades: GRENADES.map(|stats| stats.max),
+            grenade: FRAG,
+            grenades: grenade(FRAG).max,
             hand: None,
-            wheel: None,
-            last_grenade: FRAG,
             throw_anim: 0.0,
             hold: 0.0,
             blind: 0.0,
@@ -260,28 +255,6 @@ pub struct InHand {
     pub kind: GrenadeKind,
     /// A frag's fuse once its pin is pulled: seconds left before it goes off.
     pub fuse: Option<f32>,
-}
-
-/// Where each kind of grenade sits on the wheel (screen directions, y down):
-/// frag at the top, flash bottom right, smoke bottom left.
-pub const WHEEL_DIRS: [Vec2; GRENADE_KINDS] = [
-    Vec2::new(0.0, -1.0),
-    Vec2::new(0.866, 0.5),
-    Vec2::new(-0.866, 0.5),
-];
-/// Mouse movement, in pixels, that takes the wheel cursor from the middle to the edge.
-const WHEEL_TRAVEL: f32 = 120.0;
-/// The wheel cursor must be this far out to pick anything but the last grenade.
-const WHEEL_DEAD_ZONE: f32 = 0.3;
-
-/// The grenade the wheel picks with its cursor at `cursor`.
-pub fn wheel_choice(cursor: Vec2, last: GrenadeKind) -> GrenadeKind {
-    if cursor.length() < WHEEL_DEAD_ZONE {
-        return last;
-    }
-    (0..GRENADE_KINDS)
-        .max_by(|a, b| WHEEL_DIRS[*a].dot(cursor).total_cmp(&WHEEL_DIRS[*b].dot(cursor)))
-        .unwrap_or(0) as GrenadeKind
 }
 
 impl LocalPlayer {
@@ -375,7 +348,13 @@ fn handle_net(
     for NetMsg(msg) in messages.read() {
         match msg {
             ServerMsg::MatchStarted { .. } => *player = LocalPlayer::default(),
-            ServerMsg::Spawn { id, pos, yaw, spawn_seq } if *id == session.my_id => {
+            ServerMsg::Spawn {
+                id,
+                pos,
+                yaw,
+                spawn_seq,
+                grenade: kind,
+            } if *id == session.my_id => {
                 *player = LocalPlayer {
                     pos: Vec3::from(*pos),
                     yaw: *yaw,
@@ -385,7 +364,9 @@ fn handle_net(
                     spawn_seq: *spawn_seq,
                     // Every life starts with the loadout picked in the menus.
                     guns: [settings.primary, settings.secondary].map(|gun| GunSlot::full(gun, settings.sight_for(gun))),
-                    last_grenade: player.last_grenade,
+                    // The server says which grenade: the one in the loadout when it spawned us.
+                    grenade: *kind,
+                    grenades: grenade(*kind).max,
                     ..default()
                 };
             }
@@ -404,7 +385,6 @@ fn handle_net(
                 player.killed_by = Some(session.name_of(*killer).to_string());
                 // A frag being cooked drops (the server throws it down for us).
                 player.hand = None;
-                player.wheel = None;
             }
             _ => {}
         }
@@ -426,14 +406,9 @@ fn look(
     mouse: Res<AccumulatedMouseMotion>,
     controls: Res<Controls>,
     settings: Res<Settings>,
-    input: ActionInput,
     mut player: ResMut<LocalPlayer>,
 ) {
-    if !controls.captured || !player.alive {
-        player.wheel = None;
-        return;
-    }
-    if grenade_wheel(&input, mouse.delta, &mut player) || mouse.delta == Vec2::ZERO {
+    if !controls.captured || !player.alive || mouse.delta == Vec2::ZERO {
         return;
     }
     // Aiming turns the view slower in step with the zoom, so it feels the same on screen.
@@ -448,39 +423,19 @@ fn look(
     p.pitch = pitch;
 }
 
-/// Holding the grenade key opens the wheel, and the mouse moves its cursor
-/// instead of the view. Letting go takes the grenade picked into the hand.
-/// Not while a frag is cooking: that one cannot be put back. Returns true
-/// while the wheel has the mouse.
-fn grenade_wheel(input: &ActionInput, delta: Vec2, player: &mut LocalPlayer) -> bool {
-    let cooking = player.hand.is_some_and(|hand| hand.fuse.is_some());
-    if player.wheel.is_none() && input.just_pressed(Action::Grenade) && !cooking {
-        player.wheel = Some(Vec2::ZERO);
-    }
-    let Some(cursor) = player.wheel else {
-        return false;
-    };
-    if input.pressed(Action::Grenade) {
-        player.wheel = Some((cursor + delta / WHEEL_TRAVEL).clamp_length_max(1.0));
-        return true;
-    }
-    player.wheel = None;
-    let kind = wheel_choice(cursor, player.last_grenade);
-    if player.grenades[kind as usize] >= 1.0 {
-        player.last_grenade = kind;
-        player.hand = Some(InHand { kind, fuse: None });
-        // The other hand is busy: a reload is abandoned.
-        player.reload = 0.0;
-    }
-    true
-}
-
-fn movement(time: Res<Time>, input: ActionInput, map: Res<GameMap>, mut player: ResMut<LocalPlayer>) {
+fn movement(
+    time: Res<Time>,
+    input: ActionInput,
+    map: Res<GameMap>,
+    session: Res<Session>,
+    mut player: ResMut<LocalPlayer>,
+) {
     let dt = time.delta_secs().min(0.05);
     let p = &mut *player;
     p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
     p.slide_boost_cooldown = (p.slide_boost_cooldown - dt).max(0.0);
-    if !p.alive {
+    // Held in place at the spawn until the countdown is over; looking around is fine.
+    if !p.alive || session.frozen() {
         return;
     }
 
