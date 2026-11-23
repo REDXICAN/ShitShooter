@@ -32,11 +32,9 @@ pub const DEFAULT_MATCH_MINUTES: f32 = 10.0;
 pub const SNAPSHOT_RATE: f32 = 30.0;
 /// Seconds between everybody spawning and the match starting. Nobody can
 /// move, shoot or throw until it has run out, and the clock does not run.
-pub const COUNTDOWN: f32 = 5.0;
+pub const COUNTDOWN: f32 = 3.0;
 /// Seconds a ping stays on teammates' screens (less if its enemy dies).
 pub const PING_TIME: f32 = 5.0;
-/// Seconds a player must wait between two pings.
-pub const PING_COOLDOWN: f32 = 0.75;
 
 // Game modes. In the team modes players are split into two teams that cannot
 // hurt each other.

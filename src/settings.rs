@@ -131,7 +131,7 @@ impl Action {
             Action::Aim => ("Aim down sights", "aim", Mouse(MouseButton::Right)),
             Action::Reload => ("Reload", "reload", Key(KeyCode::KeyR)),
             Action::Grenade => ("Grenade", "grenade", Key(KeyCode::KeyG)),
-            Action::Ping => ("Ping enemy", "ping", Mouse(MouseButton::Middle)),
+            Action::Ping => ("Ping enemy", "ping", Key(KeyCode::KeyF)),
             Action::Primary => ("Primary gun", "primary", Key(KeyCode::Digit1)),
             Action::Secondary => ("Secondary gun", "secondary", Key(KeyCode::Digit2)),
             Action::Knife => ("Knife", "knife", Key(KeyCode::Digit3)),

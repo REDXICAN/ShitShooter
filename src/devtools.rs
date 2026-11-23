@@ -174,7 +174,7 @@ fn selftest_play(
 ) {
     // The script starts once the countdown is over.
     if session.frozen() {
-        if session.countdown < 3.5 && !*countdown_captured {
+        if session.countdown < 2.5 && !*countdown_captured {
             *countdown_captured = true;
             println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
             test.capture(&mut commands, "countdown.png");
@@ -227,11 +227,7 @@ fn selftest_play(
     // right-click), then the second one cooked and thrown with clicks, a
     // crouch that turns into a slide, a ping, and a reload by hand.
     hold(KeyCode::KeyG, (1.0..1.1).contains(&t) || (1.6..1.75).contains(&t));
-    if (3.0..3.05).contains(&t) {
-        mouse.press(MouseButton::Middle);
-    } else {
-        mouse.release(MouseButton::Middle);
-    }
+    hold(KeyCode::KeyF, (3.0..3.05).contains(&t));
     hold(KeyCode::ControlLeft, (2.35..3.3).contains(&t));
     hold(KeyCode::KeyR, (6.6..6.7).contains(&t));
     // Every weapon of the default loadout in turn: pistol, knife, back to the rifle.

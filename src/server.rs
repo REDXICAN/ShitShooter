@@ -185,8 +185,6 @@ struct Player {
     grenades: f32,
     /// The grenade picked in their loadout: carried from the next spawn on.
     loadout_grenade: GrenadeKind,
-    /// Seconds until they may ping again.
-    ping_cooldown: f32,
     /// Seconds left on the fuse of the frag with its pin pulled, if any.
     cooking: Option<f32>,
     bot: Option<Bot>,
@@ -363,10 +361,6 @@ impl Server {
                 player.weapon = state.weapon;
                 player.sight = state.sight;
             }
-        }
-
-        for player in self.players.values_mut() {
-            player.ping_cooldown = (player.ping_cooldown - dt).max(0.0);
         }
 
         // With nobody left to play, fall back to the lobby (drops leftover bots' match).
@@ -748,11 +742,9 @@ impl Server {
         let Some(pinger) = self.players.get_mut(&from) else {
             return;
         };
-        if !pinger.alive || pinger.ping_cooldown > 0.0 {
+        if !pinger.alive {
             return;
         }
-        // A little slack for network jitter.
-        pinger.ping_cooldown = PING_COOLDOWN * 0.8;
         let team = pinger.team;
         let target = target.filter(|id| {
             self.players
@@ -1111,7 +1103,6 @@ impl Server {
         player.grenade = player.loadout_grenade;
         player.grenades = grenade(player.grenade).max;
         player.cooking = None;
-        player.ping_cooldown = 0.0;
         player.fire_credit = MAX_FIRE_CREDIT;
         player.since_damage = 0.0;
         player.spawn_seq += 1;
@@ -1290,7 +1281,6 @@ impl Server {
             grenade: FRAG,
             grenades: 0.0,
             loadout_grenade: FRAG,
-            ping_cooldown: 0.0,
             cooking: None,
             bot,
         }
@@ -1779,11 +1769,11 @@ mod tests {
         let time_left = server.time_left;
         server.handle_cook(id);
         assert!(server.players[&id].cooking.is_none(), "a pin was pulled during the countdown");
-        for _ in 0..60 * 4 {
+        for _ in 0..((COUNTDOWN - 0.5) * 60.0) as usize {
             server.update_match(1.0 / 60.0);
         }
         assert_eq!(server.time_left, time_left, "the clock ran during the countdown");
-        for _ in 0..60 * 2 {
+        for _ in 0..60 {
             server.update_match(1.0 / 60.0);
         }
         assert!(server.countdown <= 0.0 && server.time_left < time_left);
@@ -1811,9 +1801,6 @@ mod tests {
         }
         assert_eq!(server.teammates_of(1000), vec![1001]);
         assert_eq!(server.teammates_of(1002), Vec::<PlayerId>::new());
-        server.start_match();
-        server.handle_ping(1000, Some(1002), [0.0; 3]);
-        assert!(server.players[&1000].ping_cooldown > 0.0, "the ping was not taken");
     }
 
     #[test]

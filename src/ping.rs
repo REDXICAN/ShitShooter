@@ -1,5 +1,5 @@
-//! Pings: point out an enemy (or a spot) to your team. The marker follows a
-//! pinged enemy around, through walls, for a few seconds. The server passes
+//! Pings: point out an enemy (or a spot) to your team, as often as you like.
+//! The marker follows a pinged enemy around, through walls, for a few seconds. The server passes
 //! pings on to the pinger's teammates only, so the other team never sees them.
 
 use bevy::{prelude::*, window::PrimaryWindow};
@@ -32,6 +32,8 @@ const DIAMOND: f32 = 12.0;
 
 const ENEMY_COLOR: Color = Color::srgb(1.0, 0.3, 0.25);
 const SPOT_COLOR: Color = Color::srgb(1.0, 0.82, 0.25);
+/// The diamond is see-through, so it hides little of what it marks.
+const DIAMOND_ALPHA: f32 = 0.5;
 
 pub struct PingPlugin;
 
@@ -59,8 +61,6 @@ impl Plugin for PingPlugin {
 #[derive(Resource, Default)]
 struct Pings {
     list: Vec<Ping>,
-    /// Seconds until we may ping again.
-    cooldown: f32,
 }
 
 struct Ping {
@@ -123,7 +123,6 @@ fn receive(
 /// The ping key pings the enemy nearest the crosshair that we can see, or
 /// else the spot we are looking at.
 fn send(
-    time: Res<Time>,
     input: ActionInput,
     map: Res<GameMap>,
     session: Res<Session>,
@@ -133,8 +132,7 @@ fn send(
     mut sounds: MessageWriter<SoundCue>,
     remotes: Query<(&RemotePlayer, &Transform)>,
 ) {
-    pings.cooldown = (pings.cooldown - time.delta_secs()).max(0.0);
-    if !input.just_pressed(Action::Ping) || !player.alive || pings.cooldown > 0.0 {
+    if !input.just_pressed(Action::Ping) || !player.alive {
         return;
     }
     let eye = player.eye();
@@ -160,7 +158,6 @@ fn send(
             None => return,
         },
     };
-    pings.cooldown = PING_COOLDOWN;
     pings.add(session.my_id, target, pos);
     connection.send(&ClientMsg::Ping {
         target,
@@ -203,7 +200,6 @@ fn screen_point(camera: &Transform, fov: f32, size: Vec2, world: Vec3) -> Vec2 {
 fn draw_markers(
     mut commands: Commands,
     session: Res<Session>,
-    player: Res<LocalPlayer>,
     mut pings: ResMut<Pings>,
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
@@ -240,15 +236,19 @@ fn draw_markers(
         let (left, top) = (px(at.x - MARKER_WIDTH / 2.0), px(at.y - DIAMOND / 2.0));
         let color = if enemy { ENEMY_COLOR } else { SPOT_COLOR };
         // Fades out over its last half second.
-        let color = color.with_alpha((ping.left / 0.5).min(1.0));
+        let fade = (ping.left / 0.5).min(1.0);
+        let color = color.with_alpha(fade);
+        let diamond_color = color.with_alpha(fade * DIAMOND_ALPHA);
 
-        let mut text = format!("{:.0} m", player.eye().distance(world));
-        if enemy {
-            text = format!("ENEMY  {text}");
-        }
-        if ping.from != session.my_id {
-            text = format!("{text}\n{}", session.name_of(ping.from));
-        }
+        // "ENEMY" over an enemy, and who pinged it when it was not us.
+        let lines: Vec<&str> = [
+            enemy.then_some("ENEMY"),
+            (ping.from != session.my_id).then(|| session.name_of(ping.from)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let text = lines.join("\n");
 
         if let Some((_, _, mut node)) = markers.iter_mut().find(|(_, marker, _)| marker.0 == ping.from) {
             if node.left != left || node.top != top {
@@ -263,7 +263,7 @@ fn draw_markers(
             }
             for (diamond, mut background) in &mut diamonds {
                 if diamond.0 == ping.from {
-                    background.set_if_neq(BackgroundColor(color));
+                    background.set_if_neq(BackgroundColor(diamond_color));
                 }
             }
             continue;
@@ -292,8 +292,8 @@ fn draw_markers(
                         ..default()
                     },
                     UiTransform::from_rotation(Rot2::degrees(45.0)),
-                    BackgroundColor(color),
-                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                    BackgroundColor(diamond_color),
+                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.35)),
                 ),
                 (
                     PingLabel(ping.from),
