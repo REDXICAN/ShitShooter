@@ -42,8 +42,9 @@ pub const PING_TIME: f32 = 5.0;
 /// How quickly strafing in the air turns into speed, like Source's
 /// `sv_airaccelerate`. The host picks one of these in the lobby, and every
 /// player moves with it (movement runs on each client).
-pub const AIR_ACCEL_CHOICES: [u16; 3] = [10, 30, 100];
-pub const DEFAULT_AIR_ACCEL: u16 = 10;
+pub const AIR_ACCEL_CHOICES: [u16; 4] = [10, 20, 30, 100];
+/// Picked in play (discussion #5): a little more than CS's 10.
+pub const DEFAULT_AIR_ACCEL: u16 = 20;
 
 /// The air acceleration after `current` in `AIR_ACCEL_CHOICES`, going round.
 pub fn next_air_accel(current: u16) -> u16 {

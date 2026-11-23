@@ -84,7 +84,7 @@ OPTIONS:
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
     --map <NAME>         Map to start on: arena or depot  [default: arena]
-    --airaccel <N>       Air acceleration: 10, 30 or 100  [default: 10]
+    --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
     --help               Show this text
 ";
 

@@ -1663,11 +1663,11 @@ mod tests {
             server.handle_message(leader, ClientMsg::NextAirAccel);
             seen.push(server.settings.air_accel);
         }
-        assert_eq!(seen, [30, 100, 10]);
+        assert_eq!(seen, [30, 100, 10, 20]);
         let ServerMsg::Roster { air_accel, .. } = server.roster_msg() else {
             panic!("not a roster");
         };
-        assert_eq!(air_accel, 10);
+        assert_eq!(air_accel, DEFAULT_AIR_ACCEL);
     }
 
     #[test]

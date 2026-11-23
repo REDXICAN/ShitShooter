@@ -48,7 +48,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 6. [x] Blender pass: magazines, shotgun sight mount, 2x sight (#7 part 2, reload prep)
 7. [x] Reload animations on the guns
 8. [x] 2x sight on every gun, and zoom set by the sight (#7, part 2)
-9. [ ] Air strafe tuning (#5)
+9. [x] Air strafe tuning (#5)
 
 Later, not now: surf ramps (#6), see the last section.
 
@@ -301,6 +301,13 @@ Zoom comes only from the sight, never from the gun:
 - Optional: a host setting for air acceleration in the lobby, sent to every
   player (like `sv_airaccelerate`). Movement runs on each client, so the value
   must reach all of them.
+
+Done. The lobby has an "Air accel" row (10, 20, 30, 100; `--airaccel` for a
+dedicated server), sent with the roster (`AIR_ACCEL_CHOICES` in
+`src/protocol.rs`). Played and picked: 20 is the default "for now".
+`AIR_WISH_SPEED` stays 1.0. Worth knowing for later tuning: movement runs
+once per rendered frame, so at a high frame rate the air acceleration bites
+less per frame than at 60 fps (Source avoids that with a fixed tick).
 
 ## Later: surf ramps (#6)
 
