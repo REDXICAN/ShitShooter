@@ -30,9 +30,10 @@ const GROUND_ACCEL: f32 = 10.0;
 const FRICTION: f32 = 6.0;
 const STOP_SPEED: f32 = 3.0;
 /// Quake-style air strafing: in the air you can only add up to this much speed
-/// in the wished direction per frame, which is what makes strafe-jumping gain speed.
+/// in the wished direction per frame, which is what makes strafe-jumping gain
+/// speed. How fast it is added is the host's air acceleration
+/// (`Session::air_accel`), times running speed.
 const AIR_WISH_SPEED: f32 = 1.0;
-const AIR_ACCEL: f32 = 10.0;
 /// Extra air control (m/s²) that only applies below running speed.
 const AIR_CONTROL_ACCEL: f32 = 25.0;
 const GRAVITY: f32 = 22.0;
@@ -639,6 +640,7 @@ fn movement(
     mut player: ResMut<LocalPlayer>,
 ) {
     let dt = time.delta_secs().min(0.05);
+    let air_accel = session.air_accel();
     let p = &mut *player;
     p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
     p.slide_boost_cooldown = (p.slide_boost_cooldown - dt).max(0.0);
@@ -695,7 +697,7 @@ fn movement(
             p.vel.y = JUMP_SPEED;
             p.grounded = false;
             p.sliding = false;
-            air_accelerate(&mut p.vel, wish, dt);
+            air_accelerate(&mut p.vel, wish, air_accel, dt);
         } else if p.sliding {
             // A slide keeps its direction and bleeds speed slowly.
             let speed = p.horizontal_speed();
@@ -722,7 +724,7 @@ fn movement(
             p.air_jumps -= 1;
             p.vel.y = JUMP_SPEED;
         }
-        air_accelerate(&mut p.vel, wish, dt);
+        air_accelerate(&mut p.vel, wish, air_accel, dt);
     }
 
     // Dash: redirect all momentum where you are steering, with a minimum speed.
@@ -780,13 +782,13 @@ fn accelerate(vel: &mut Vec3, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f
     }
 }
 
-fn air_accelerate(vel: &mut Vec3, wish_dir: Vec3, dt: f32) {
+fn air_accelerate(vel: &mut Vec3, wish_dir: Vec3, air_accel: f32, dt: f32) {
     // Below running speed you get plain air control, so hopping from a standstill
     // is not a crawl. Above it, only strafing adds speed.
     if vel.with_y(0.0).length() < RUN_SPEED {
         accelerate(vel, wish_dir, RUN_SPEED, AIR_CONTROL_ACCEL, dt);
     }
-    accelerate(vel, wish_dir, AIR_WISH_SPEED, AIR_ACCEL * RUN_SPEED, dt);
+    accelerate(vel, wish_dir, AIR_WISH_SPEED, air_accel * RUN_SPEED, dt);
 }
 
 fn apply_friction(vel: &mut Vec3, dt: f32) {

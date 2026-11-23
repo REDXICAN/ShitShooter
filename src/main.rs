@@ -84,6 +84,7 @@ OPTIONS:
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
     --map <NAME>         Map to start on: arena or depot  [default: arena]
+    --airaccel <N>       Air acceleration: 10, 30 or 100  [default: 10]
     --help               Show this text
 ";
 
@@ -122,6 +123,13 @@ fn parse_args() -> Result<LaunchArgs, String> {
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
                     .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot)"))? as u8;
+            }
+            "--airaccel" => {
+                let accel: u16 = number(&flag, value("number")?)?;
+                if !protocol::AIR_ACCEL_CHOICES.contains(&accel) {
+                    return Err(format!("--airaccel must be one of {:?}", protocol::AIR_ACCEL_CHOICES));
+                }
+                args.server.air_accel = accel;
             }
             "--selftest" => args.selftest = Some(value("directory")?),
             "--help" | "-h" => return Err(String::new()),

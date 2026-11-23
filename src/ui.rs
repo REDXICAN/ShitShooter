@@ -835,6 +835,7 @@ enum LobbyText {
     Mode,
     Map,
     Bots,
+    AirAccel,
     /// How the last match ended, and who we are waiting for.
     Info,
 }
@@ -953,6 +954,11 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
                                     match_row("Mode", LobbyText::Mode, leader_button("Change", ClientMsg::NextMode)),
                                     match_row("Map", LobbyText::Map, leader_button("Change", ClientMsg::NextMap)),
                                     match_row(
+                                        "Air accel",
+                                        LobbyText::AirAccel,
+                                        leader_button("Change", ClientMsg::NextAirAccel),
+                                    ),
+                                    match_row(
                                         "Bots",
                                         LobbyText::Bots,
                                         (
@@ -1014,6 +1020,12 @@ fn update_lobby(
             LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_string(),
             LobbyText::Map => MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?").to_string(),
             LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
+            // Named after where each value is played.
+            LobbyText::AirAccel => match session.air_accel() as u16 {
+                10 => "10 (CS)".to_string(),
+                100 => "100 (bhop)".to_string(),
+                other => other.to_string(),
+            },
             LobbyText::Info => {
                 let mut lines = Vec::new();
                 if let Some(result) = &session.last_result {

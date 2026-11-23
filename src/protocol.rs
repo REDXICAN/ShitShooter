@@ -39,6 +39,17 @@ pub const SNAPSHOT_RATE: f32 = 30.0;
 pub const COUNTDOWN: f32 = 3.0;
 /// Seconds a ping stays on teammates' screens (less if its enemy dies).
 pub const PING_TIME: f32 = 5.0;
+/// How quickly strafing in the air turns into speed, like Source's
+/// `sv_airaccelerate`. The host picks one of these in the lobby, and every
+/// player moves with it (movement runs on each client).
+pub const AIR_ACCEL_CHOICES: [u16; 3] = [10, 30, 100];
+pub const DEFAULT_AIR_ACCEL: u16 = 10;
+
+/// The air acceleration after `current` in `AIR_ACCEL_CHOICES`, going round.
+pub fn next_air_accel(current: u16) -> u16 {
+    let here = AIR_ACCEL_CHOICES.iter().position(|&choice| choice == current);
+    AIR_ACCEL_CHOICES[here.map_or(0, |i| (i + 1) % AIR_ACCEL_CHOICES.len())]
+}
 
 // Game modes. In the team modes players are split into two teams that cannot
 // hurt each other.
@@ -155,7 +166,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-10:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-11:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -196,6 +207,8 @@ pub enum ClientMsg {
     NextMap,
     /// Lobby leader only, in the lobby: switch to the next game mode.
     NextMode,
+    /// Lobby leader only, in the lobby: switch to the next of `AIR_ACCEL_CHOICES`.
+    NextAirAccel,
     /// In the lobby: move yourself to the other team.
     SwitchTeam,
     /// Lobby leader only: abort the running match and return to the lobby.
@@ -265,6 +278,8 @@ pub enum ServerMsg {
         map: u8,
         /// One of the `MODE_*` constants.
         mode: u8,
+        /// See `AIR_ACCEL_CHOICES`.
+        air_accel: u16,
     },
     MatchStarted {
         /// See `score_limit`.

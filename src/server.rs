@@ -40,6 +40,8 @@ pub struct ServerSettings {
     pub map: u8,
     /// One of the `MODE_*` constants.
     pub mode: u8,
+    /// See `AIR_ACCEL_CHOICES`.
+    pub air_accel: u16,
 }
 
 impl Default for ServerSettings {
@@ -52,6 +54,7 @@ impl Default for ServerSettings {
             bots: 0,
             map: 0,
             mode: MODE_FFA,
+            air_accel: DEFAULT_AIR_ACCEL,
         }
     }
 }
@@ -611,6 +614,10 @@ impl Server {
             ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => self.end_match(Winner::Nobody),
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
                 self.settings.mode = (self.settings.mode + 1) % MODE_NAMES.len() as u8;
+                self.roster_dirty = true;
+            }
+            ClientMsg::NextAirAccel if is_leader && self.phase == Phase::Lobby => {
+                self.settings.air_accel = next_air_accel(self.settings.air_accel);
                 self.roster_dirty = true;
             }
             ClientMsg::SwitchTeam if self.phase == Phase::Lobby => {
@@ -1348,6 +1355,7 @@ impl Server {
             leader: self.leader().unwrap_or(0),
             map: self.settings.map,
             mode: self.settings.mode,
+            air_accel: self.settings.air_accel,
         }
     }
 
@@ -1633,6 +1641,34 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_leader_picks_the_air_acceleration_for_everyone() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for id in [1, 2] {
+            server.join_counter += 1;
+            let player = server.new_player(format!("P{id}"), None);
+            server.players.insert(id, player);
+        }
+        let leader = server.leader().unwrap();
+        let other = if leader == 1 { 2 } else { 1 };
+        server.handle_message(other, ClientMsg::NextAirAccel);
+        assert_eq!(server.settings.air_accel, DEFAULT_AIR_ACCEL, "only the leader may");
+        let mut seen = Vec::new();
+        for _ in 0..AIR_ACCEL_CHOICES.len() {
+            server.handle_message(leader, ClientMsg::NextAirAccel);
+            seen.push(server.settings.air_accel);
+        }
+        assert_eq!(seen, [30, 100, 10]);
+        let ServerMsg::Roster { air_accel, .. } = server.roster_msg() else {
+            panic!("not a roster");
+        };
+        assert_eq!(air_accel, 10);
+    }
 
     #[test]
     fn bots_load_a_shotgun_shell_by_shell() {

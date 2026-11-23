@@ -63,6 +63,8 @@ pub struct Session {
     pub roster: Vec<PlayerInfo>,
     /// One of the `MODE_*` constants.
     pub mode: u8,
+    /// The host's air acceleration (see `AIR_ACCEL_CHOICES`); 0 until told.
+    pub air_accel: u16,
     /// The score that wins: kills, team kills or seconds on the hill.
     pub score_limit: u32,
     pub team_scores: [u32; 2],
@@ -82,6 +84,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// How quickly strafing in the air turns into speed (see `AIR_ACCEL_CHOICES`).
+    pub fn air_accel(&self) -> f32 {
+        if self.air_accel == 0 { DEFAULT_AIR_ACCEL } else { self.air_accel }.into()
+    }
+
     pub fn is_leader(&self) -> bool {
         self.my_id != 0 && self.my_id == self.leader
     }
@@ -324,10 +331,12 @@ fn update_session(
                 leader,
                 map,
                 mode,
+                air_accel,
             } => {
                 session.roster = players.clone();
                 session.leader = *leader;
                 session.mode = *mode;
+                session.air_accel = *air_accel;
                 // The host picked another map: swap the scenery and the collision.
                 if game_map.0.id != *map {
                     game_map.0 = Map::by_id(*map);
