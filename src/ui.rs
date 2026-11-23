@@ -1061,6 +1061,8 @@ enum Hud {
     Score(usize),
     /// The line under the clock: score limit, team, hill.
     Info,
+    /// Frames per second, over the ping.
+    Fps,
     Ping,
     Speed,
     DashLabel,
@@ -1224,6 +1226,30 @@ fn score_block(side: usize) -> impl Bundle {
         children![
             hud_text(12.0, DIM, Hud::ScoreLabel(side)),
             hud_text(26.0, TEXT, Hud::Score(side)),
+        ],
+    )
+}
+
+/// One line of the frame rate and ping box: a caption on the left, the value
+/// lined up on the right so it does not wobble as the digits change.
+fn stat_row(caption: &str, hud: Hud) -> impl Bundle {
+    (
+        Node {
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            column_gap: px(14),
+            ..default()
+        },
+        children![
+            (label(caption, 11.0, DIM), hud_shadow()),
+            (
+                Node {
+                    min_width: px(48),
+                    justify_content: JustifyContent::End,
+                    ..default()
+                },
+                children![hud_text(14.0, TEXT, hud)],
+            ),
         ],
     )
 }
@@ -1441,7 +1467,15 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             top: px(14),
             ..default()
         }),
-        children![hud_text(14.0, DIM, Hud::Ping)],
+        children![(
+            hud_panel(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: px(2),
+                padding: UiRect::axes(px(10), px(5)),
+                ..default()
+            }),
+            children![stat_row("FPS", Hud::Fps), stat_row("PING", Hud::Ping)],
+        )],
     ));
 
     // Kill feed, top right.
@@ -1760,6 +1794,27 @@ fn format_clock(seconds: f32) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
+/// The frame rate on the HUD: frames counted over a quarter second, so the
+/// number holds still long enough to read.
+#[derive(Default)]
+struct FpsCounter {
+    frames: u32,
+    elapsed: f32,
+    shown: f32,
+}
+
+impl FpsCounter {
+    fn tick(&mut self, delta: f32) {
+        self.frames += 1;
+        self.elapsed += delta;
+        if self.elapsed >= 0.25 {
+            self.shown = self.frames as f32 / self.elapsed;
+            self.frames = 0;
+            self.elapsed = 0.0;
+        }
+    }
+}
+
 /// What goes either side of the clock, and under it.
 struct TopBar {
     labels: [String; 2],
@@ -1820,8 +1875,12 @@ fn update_hud(
     feed: Res<KillFeed>,
     notices: Res<Notices>,
     connection: Option<Res<Connection>>,
+    time: Res<Time>,
+    mut fps: Local<FpsCounter>,
     mut texts: Query<(&Hud, &mut Text, &mut TextColor)>,
 ) {
+    fps.tick(time.delta_secs());
+    let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
     let top = top_bar(&session);
     // A notice fades out over its last half second.
     let notice = |notice: &Option<(String, f32)>, color: Color| match notice {
@@ -1838,9 +1897,21 @@ fn update_hud(
             Hud::ScoreLabel(side) => (top.labels[side].clone(), top.colors[side].with_alpha(0.8)),
             Hud::Score(side) => (top.scores[side].to_string(), top.colors[side]),
             Hud::Info => (top.info.clone(), DIM),
+            Hud::Fps => (
+                format!("{:.0}", fps.shown),
+                match fps.shown {
+                    f if f < 30.0 => DANGER,
+                    f if f < 60.0 => ACCENT,
+                    _ => TEXT,
+                },
+            ),
             Hud::Ping => (
-                format!("{:.0} ms", connection.as_ref().map_or(0.0, |c| c.ping_ms())),
-                DIM,
+                format!("{ping:.0} ms"),
+                match ping {
+                    p if p > 150.0 => DANGER,
+                    p if p > 80.0 => ACCENT,
+                    _ => TEXT,
+                },
             ),
             Hud::Speed => (format!("{:.1} m/s", player.horizontal_speed()), TEXT),
             Hud::DashLabel => (
